@@ -87,12 +87,13 @@ tasks:
       - task: build-examples
 
   build-examples:
-    desc: 'Build bin/ntactor-replay, bin/ntactor-arena, and bin/ntactor-flock'
+    desc: 'Build bin/ntactor-replay, bin/ntactor-arena, bin/ntactor-flock, and bin/ntactor-nav'
     cmds:
       - mkdir -p bin
       - go -C examples build -mod=readonly -o ../bin/ntactor-replay ./replay
       - go -C examples build -mod=readonly -o ../bin/ntactor-arena ./arena
       - go -C examples build -mod=readonly -o ../bin/ntactor-flock ./flock
+      - go -C examples build -mod=readonly -o ../bin/ntactor-nav ./nav
 
   run-replay:
     desc: 'Run the live-recording and historical-replay verification demo'
@@ -110,6 +111,12 @@ tasks:
     interactive: true
     cmds:
       - go -C examples run -mod=readonly ./flock {{.CLI_ARGS}}
+
+  run-nav:
+    desc: 'Run the interactive A* pathfinding and FlowField maze demo (pass -- -headless for CLI)'
+    interactive: true
+    cmds:
+      - go -C examples run -mod=readonly ./nav {{.CLI_ARGS}}
 
   ci:
     desc: 'Full portable CI gate'

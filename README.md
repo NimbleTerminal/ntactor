@@ -83,6 +83,7 @@ func main() {
 | `fsm.go` | `FSM`, `FSMState`, `Transition`, `StateID`, `WildcardState` | Deterministic Finite State Machine with `OnEnter`, `OnTick`, `OnExit`, and ordered conditional transitions |
 | `bt.go` | `BehaviorTree`, `BTNode`, `Sequence`, `MemSequence`, `Selector`, `MemSelector`, `Parallel`, `Condition`, `Action`, `Invert`, `Cooldown`, `Timeout` | Stateless and stateful Behavior Tree composites, decorators, and leaves |
 | `steering.go` | `Vec3`, `Vec2`, `SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`, `SteerSeparation`, `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `FlockBehavior`, `PatrolBehavior`, `WanderBehavior` | Abstract 2D/3D vector kinematics, obstacle avoidance, and Reynolds Boids flocking |
+| `nav.go` | `NavGraph`, `NodeID`, `FindPath`, `FindPathNodes`, `GridMap`, `FlowField`, `FollowPathBehavior`, `FlowFieldBehavior` | Deterministic A\* pathfinding, line-of-sight path smoothing, weighted occupancy grids, and Dijkstra flow fields |
 | `driver_live.go` | `LiveDriver`, `LiveConfig`, `Frame`, `EventLog`, `Driver` | Accumulates wall time (variable clamped `dt` or fixed `FixedDT`), injects live events, and records an `EventLog` |
 | `driver_historical.go` | `HistoricalDriver` | Replays a recorded `EventLog` or scripted `[]Frame` sequence for bit-exact historical determinism |
 | `codec.go` | `EncodeEventLogJSON`, `DecodeEventLogJSON`, `MarshalEventLogBinary`, `UnmarshalEventLogBinary` | Bounded JSON and compact binary serialization for recorded `EventLog` replays |
@@ -136,9 +137,11 @@ task run-arena                 # Interactive terminal arena (b: beacon, i: intru
 task run-arena -- -headless    # Run arena headlessly and print the dashboard
 task run-flock                 # Interactive Boids murmuration / particle-swarm demo (a: attractor, p: predator, r: replay)
 task run-flock -- -headless    # Run murmuration headlessly and print density grid + point-cloud stats
+task run-nav                   # Interactive A* pathfinding & FlowField maze demo (w: wall, g: goal, s: smooth, c: crowd)
+task run-nav -- -headless      # Run navigation demo headlessly and print the maze view
 ```
 
-See [examples/README.md](examples/README.md) for controls and flags, and [ROADMAP.md](ROADMAP.md) for planned path-planning and navigation features.
+See [examples/README.md](examples/README.md) for controls and flags, and [ROADMAP.md](ROADMAP.md) for upcoming features.
 
 ## Contributing
 

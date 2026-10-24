@@ -952,3 +952,131 @@ func BenchmarkFlockGridIndex(b *testing.B) {
 		w.Tick(1.0/60.0, nil)
 	}
 }
+
+func TestGridMapAStarAndPathSmoothing(t *testing.T) {
+	grid := NewGridMap(20, 12, 1.0, Vec2(0, 0))
+	// Vertical wall at column 10 from row 0..8, leaving doorway at rows 9..11.
+	grid.SetRectWall(10, 0, 10, 8, true)
+
+	start := grid.CellToWorld(2, 2)
+	goal := grid.CellToWorld(17, 2)
+
+	if grid.HasLineOfSight(start, goal) {
+		t.Fatal("expected wall at x=10 to block direct line of sight")
+	}
+
+	rawPath, ok := grid.FindWorldPath(start, goal, false)
+	if !ok || len(rawPath) < 4 {
+		t.Fatalf("expected valid raw path around wall, got ok=%v len=%d", ok, len(rawPath))
+	}
+	for _, pt := range rawPath {
+		cx, cy, inBounds := grid.WorldToCell(pt)
+		if !inBounds || grid.IsWall(cx, cy) {
+			t.Fatalf("raw path waypoint %+v lies in wall cell (%d, %d)", pt, cx, cy)
+		}
+	}
+
+	smoothPath, ok := grid.FindWorldPath(start, goal, true)
+	if !ok || len(smoothPath) >= len(rawPath) {
+		t.Fatalf("expected smoothed path (%d) to have fewer waypoints than raw path (%d)",
+			len(smoothPath), len(rawPath))
+	}
+	for i := 0; i < len(smoothPath)-1; i++ {
+		if !grid.HasLineOfSight(smoothPath[i], smoothPath[i+1]) {
+			t.Fatalf("smoothed segment %d -> %d lacks line of sight", i, i+1)
+		}
+	}
+
+	// Verify FollowPathBehavior steers an Actor all the way to goal without entering a wall.
+	w := NewWorld(Config{Seed: 1, LineOfSight: grid.HasLineOfSight})
+	follow := &FollowPathBehavior{
+		Path:          smoothPath,
+		Speed:         6.0,
+		MaxForce:      30.0,
+		ArrivalRadius: 0.4,
+	}
+	id := w.Spawn(Actor{
+		Position: start,
+		Behavior: follow,
+	})
+	a := w.ActorByID(id)
+
+	for i := 0; i < 200 && !follow.Completed(); i++ {
+		w.Tick(0.05, nil)
+		cx, cy, ok := grid.WorldToCell(a.Position)
+		if !ok || grid.IsWall(cx, cy) {
+			t.Fatalf("step %d: actor entered wall cell (%d,%d) at %+v", i, cx, cy, a.Position)
+		}
+	}
+	if !follow.Completed() {
+		t.Fatalf("expected actor to complete path within 200 ticks; pos=%+v goal=%+v", a.Position, goal)
+	}
+}
+
+func TestWeightedGridCostPreference(t *testing.T) {
+	grid := NewGridMap(10, 5, 1.0, Vec2(0, 0))
+	grid.AllowDiagonal = false
+	// Make row 2 across columns 2..7 expensive mud (cost 10.0).
+	for x := 2; x <= 7; x++ {
+		grid.SetCost(x, 2, 10.0)
+	}
+
+	nodes, ok := FindPathNodes(grid, grid.NodeID(1, 2), grid.NodeID(8, 2), 0)
+	if !ok {
+		t.Fatal("expected valid path")
+	}
+	for _, nid := range nodes {
+		cx, cy := grid.Coords(nid)
+		if cy == 2 && cx >= 2 && cx <= 7 {
+			t.Fatalf("expected A* to route around high-cost mud cell (%d, %d)", cx, cy)
+		}
+	}
+}
+
+func TestFlowFieldAndCrowdNavigation(t *testing.T) {
+	grid := NewGridMap(16, 10, 1.0, Vec2(0, 0))
+	grid.SetRectWall(7, 0, 7, 6, true) // Wall with gap at rows 7..9
+
+	flow := NewFlowField(grid)
+	goal := grid.CellToWorld(13, 2)
+	if !flow.ComputeWorld(goal) {
+		t.Fatal("FlowField.ComputeWorld failed")
+	}
+	if !flow.Valid() {
+		t.Fatal("expected FlowField.Valid() == true")
+	}
+
+	w := NewWorld(Config{
+		Seed:       42,
+		Perception: NewGridIndex(2.5),
+	})
+	for i := 0; i < 8; i++ {
+		start := grid.CellToWorld(2, 1+i)
+		w.Spawn(Actor{
+			Tag:      "crowd",
+			Position: start,
+			Behavior: &FlowFieldBehavior{
+				Field:            flow,
+				MaxSpeed:         5.0,
+				MaxForce:         25.0,
+				SeparationRadius: 0.9,
+				SeparationWeight: 0.6,
+				ArrivalRadius:    0.8,
+			},
+		})
+	}
+
+	for step := 0; step < 220; step++ {
+		w.Tick(0.05, nil)
+	}
+
+	arrived := 0
+	for _, a := range w.Actors() {
+		if a.Position.Dist(goal) <= 2.5 {
+			arrived++
+		}
+	}
+	if arrived < 6 {
+		t.Fatalf("expected at least 6 of 8 flow-field actors to reach goal neighborhood, got %d", arrived)
+	}
+}
