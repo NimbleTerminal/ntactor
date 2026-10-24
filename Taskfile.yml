@@ -1,0 +1,121 @@
+# ntactor - Copyright (c) 2026 Neomantra Corp.
+
+version: '3'
+
+env:
+  GOWORK: 'off'
+
+tasks:
+  default:
+    desc: 'Run tests and build the library and examples'
+    cmds:
+      - task: test
+      - task: build
+
+  list:
+    desc: 'List available tasks'
+    cmds:
+      - task --list-all
+
+  fmt:
+    desc: 'Format Go source'
+    cmds:
+      - gofmt -w .
+
+  fmt-check:
+    desc: 'Check Go formatting without changing files'
+    cmds:
+      - |
+        files="$(gofmt -l .)"
+        if [ -n "$files" ]; then printf '%s\n' "$files"; exit 1; fi
+
+  go-tidy:
+    desc: 'Tidy module metadata in root and examples'
+    cmds:
+      - go mod tidy
+      - go -C examples mod tidy
+
+  go-tidy-check:
+    aliases: [tidy-check]
+    desc: 'Check module metadata without changing files'
+    cmds:
+      - go mod tidy -diff
+      - go -C examples mod tidy -diff
+
+  go-verify:
+    desc: 'Verify downloaded module contents'
+    cmds:
+      - go mod verify
+      - go -C examples mod verify
+
+  test:
+    desc: 'Run tests in root and examples modules'
+    cmds:
+      - go test -mod=readonly ./...
+      - go -C examples test -mod=readonly ./...
+
+  test-race:
+    desc: 'Run tests with the race detector'
+    cmds:
+      - go test -mod=readonly -race ./...
+      - go -C examples test -mod=readonly -race ./...
+
+  vet:
+    desc: 'Run go vet across root and examples modules'
+    cmds:
+      - go vet -mod=readonly ./...
+      - go -C examples vet -mod=readonly ./...
+
+  cross:
+    desc: 'Vet and build across supported platforms without CGO'
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - GOOS=windows GOARCH=amd64 go build -mod=readonly ./...
+      - GOOS=linux GOARCH=amd64 go build -mod=readonly ./...
+      - GOOS=darwin GOARCH=arm64 go build -mod=readonly ./...
+      - GOOS=freebsd GOARCH=amd64 go build -mod=readonly ./...
+      - GOOS=js GOARCH=wasm go build -mod=readonly ./...
+      - GOOS=windows GOARCH=amd64 go -C examples vet -mod=readonly ./...
+      - GOOS=linux GOARCH=amd64 go -C examples vet -mod=readonly ./...
+      - GOOS=darwin GOARCH=arm64 go -C examples vet -mod=readonly ./...
+
+  build:
+    desc: 'Build the library and example binaries into bin/'
+    cmds:
+      - go build -mod=readonly ./...
+      - task: build-examples
+
+  build-examples:
+    desc: 'Build bin/ntactor-replay and bin/ntactor-arena'
+    cmds:
+      - mkdir -p bin
+      - go -C examples build -mod=readonly -o ../bin/ntactor-replay ./replay
+      - go -C examples build -mod=readonly -o ../bin/ntactor-arena ./arena
+
+  run-replay:
+    desc: 'Run the live-recording and historical-replay verification demo'
+    cmds:
+      - go -C examples run -mod=readonly ./replay {{.CLI_ARGS}}
+
+  run-arena:
+    desc: 'Run the interactive terminal glyph arena demo (pass -- -headless for CLI)'
+    interactive: true
+    cmds:
+      - go -C examples run -mod=readonly ./arena {{.CLI_ARGS}}
+
+  ci:
+    desc: 'Full portable CI gate'
+    cmds:
+      - task: fmt-check
+      - task: go-tidy-check
+      - task: go-verify
+      - task: test-race
+      - task: vet
+      - task: cross
+      - task: build
+
+  clean:
+    desc: 'Remove generated binaries and task artifacts'
+    cmds:
+      - rm -rf bin dist .task
