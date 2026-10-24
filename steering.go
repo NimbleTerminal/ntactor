@@ -156,6 +156,50 @@ func SteerArrive(pos, target Vec3, maxSpeed, slowRadius float64) Vec3 {
 	return offset.Scale(speed / dist)
 }
 
+// SteerPursue predicts target's future position based on target.Velocity (clamped
+// to maxPredictionTime seconds ahead) and returns a desired seek velocity at maxSpeed.
+func SteerPursue(self, target *Actor, maxPredictionTime, maxSpeed float64) Vec3 {
+	if self == nil || target == nil || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	dist := self.Position.Dist(target.Position)
+	speed := self.Velocity.Len()
+	if speed < maxSpeed*0.25 {
+		speed = maxSpeed
+	}
+	t := 0.0
+	if speed > 1e-9 {
+		t = dist / speed
+	}
+	if maxPredictionTime > 0 && t > maxPredictionTime {
+		t = maxPredictionTime
+	}
+	predicted := target.Position.Add(target.Velocity.Scale(t))
+	return SteerSeek(self.Position, predicted, maxSpeed)
+}
+
+// SteerEvade predicts threat's future position based on threat.Velocity (clamped
+// to maxPredictionTime seconds ahead) and returns a desired flee velocity at maxSpeed.
+func SteerEvade(self, threat *Actor, maxPredictionTime, maxSpeed float64) Vec3 {
+	if self == nil || threat == nil || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	dist := self.Position.Dist(threat.Position)
+	speed := self.Velocity.Len()
+	if speed < maxSpeed*0.25 {
+		speed = maxSpeed
+	}
+	t := 0.0
+	if speed > 1e-9 {
+		t = dist / speed
+	}
+	if maxPredictionTime > 0 && t > maxPredictionTime {
+		t = maxPredictionTime
+	}
+	predicted := threat.Position.Add(threat.Velocity.Scale(t))
+	return SteerFlee(self.Position, predicted, maxSpeed)
+}
+
 // SteerWander perturbs currentVel using rng in the XY plane by jitter and
 // normalizes the result to maxSpeed.
 func SteerWander(currentVel Vec3, rng *RNG, jitter, maxSpeed float64) Vec3 {
@@ -196,6 +240,243 @@ func SteerSeparation(self *Actor, neighbors []*Actor, desiredSeparation, maxSpee
 		return Vec3{}
 	}
 	return push.Normalize().Scale(maxSpeed)
+}
+
+// SteerAlignment computes a desired velocity aligned with the average heading
+// of neighbors at maxSpeed.
+func SteerAlignment(self *Actor, neighbors []*Actor, maxSpeed float64) Vec3 {
+	if self == nil || len(neighbors) == 0 || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	var sumVel Vec3
+	count := 0
+	for _, other := range neighbors {
+		if other == nil || other.ID == self.ID {
+			continue
+		}
+		sumVel = sumVel.Add(other.Velocity)
+		count++
+	}
+	if count == 0 || sumVel.LenSq() <= 1e-12 {
+		return Vec3{}
+	}
+	return sumVel.Scale(1.0 / float64(count)).Normalize().Scale(maxSpeed)
+}
+
+// SteerCohesion computes a desired velocity seeking the center of mass (average
+// position) of neighbors at maxSpeed.
+func SteerCohesion(self *Actor, neighbors []*Actor, maxSpeed float64) Vec3 {
+	if self == nil || len(neighbors) == 0 || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	var sumPos Vec3
+	count := 0
+	for _, other := range neighbors {
+		if other == nil || other.ID == self.ID {
+			continue
+		}
+		sumPos = sumPos.Add(other.Position)
+		count++
+	}
+	if count == 0 {
+		return Vec3{}
+	}
+	center := sumPos.Scale(1.0 / float64(count))
+	return SteerSeek(self.Position, center, maxSpeed)
+}
+
+// CircleObstacle represents an abstract spherical/circular obstacle for avoidance steering.
+type CircleObstacle struct {
+	Center Vec3
+	Radius float64
+}
+
+// SteerAvoidCircles projects self's forward path by lookahead and returns a
+// lateral avoidance velocity away from the closest intersecting CircleObstacle.
+// If no obstacle intersects the lookahead corridor, the zero Vec3 is returned.
+func SteerAvoidCircles(self *Actor, obstacles []CircleObstacle, lookahead, maxSpeed float64) Vec3 {
+	if self == nil || len(obstacles) == 0 || lookahead <= 0 || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	fwd := self.Velocity.Normalize()
+	if fwd.LenSq() <= 1e-12 {
+		return Vec3{}
+	}
+
+	bestProj := lookahead + 1.0
+	var lateral Vec3
+	found := false
+
+	for _, obs := range obstacles {
+		toObs := obs.Center.Sub(self.Position)
+		proj := toObs.Dot(fwd)
+		combinedRadius := obs.Radius + math.Max(0, self.Radius)
+		if proj < 0 || proj > lookahead+combinedRadius {
+			continue
+		}
+		closestPoint := self.Position.Add(fwd.Scale(proj))
+		offset := closestPoint.Sub(obs.Center)
+		distSq := offset.LenSq()
+		if distSq < combinedRadius*combinedRadius && proj < bestProj {
+			bestProj = proj
+			found = true
+			if distSq > 1e-12 {
+				lateral = offset.Normalize().Scale(maxSpeed)
+			} else {
+				// Exact head-on alignment: deflect perpendicular in XY plane.
+				perp := Vec3{X: -fwd.Y, Y: fwd.X, Z: 0}.Normalize()
+				if perp.LenSq() <= 1e-12 {
+					perp = Vec3{X: 0, Y: 1, Z: 0}
+				}
+				lateral = perp.Scale(maxSpeed)
+			}
+		}
+	}
+
+	if !found {
+		return Vec3{}
+	}
+	return lateral
+}
+
+// FlockBehavior implements Reynolds Boids flocking (Separation, Alignment, and
+// Cohesion) with optional target attraction, threat repulsion, and arena containment.
+// It can drive swarms of actors or particle-like boid clouds.
+type FlockBehavior struct {
+	NeighborRadius   float64
+	SeparationRadius float64
+	SeparationWeight float64
+	AlignmentWeight  float64
+	CohesionWeight   float64
+	WanderJitter     float64
+	MaxSpeed         float64
+	MaxForce         float64
+	SameTagOnly      bool
+
+	// AttractTag, when non-empty, pulls boids toward the nearest Actor with this Tag.
+	AttractTag    string
+	AttractWeight float64
+
+	// RepelTag, when non-empty, scatters boids away from Actors with this Tag
+	// within RepelRadius.
+	RepelTag    string
+	RepelRadius float64
+	RepelWeight float64
+
+	// BoundsRadius, when > 0, softly steers boids back toward BoundsCenter.
+	BoundsCenter Vec3
+	BoundsRadius float64
+
+	scratch []*Actor
+}
+
+// Tick computes combined flocking forces from nearby Actors and integrates self.Position.
+func (f *FlockBehavior) Tick(dt float64, self *Actor, world *World) {
+	if f == nil || self == nil || world == nil || dt <= 0 {
+		return
+	}
+	maxSpeed := f.MaxSpeed
+	if maxSpeed <= 0 {
+		maxSpeed = 6.0
+	}
+	maxForce := f.MaxForce
+	if maxForce <= 0 {
+		maxForce = maxSpeed * 3.0
+	}
+	neighborRad := f.NeighborRadius
+	if neighborRad <= 0 {
+		neighborRad = 5.0
+	}
+	sepRad := f.SeparationRadius
+	if sepRad <= 0 {
+		sepRad = neighborRad * 0.45
+	}
+	sepWeight := f.SeparationWeight
+	if sepWeight == 0 && f.AlignmentWeight == 0 && f.CohesionWeight == 0 {
+		sepWeight = 1.6
+	}
+	alignWeight := f.AlignmentWeight
+	if alignWeight == 0 && f.SeparationWeight == 0 && f.CohesionWeight == 0 {
+		alignWeight = 1.0
+	}
+	cohesionWeight := f.CohesionWeight
+	if cohesionWeight == 0 && f.SeparationWeight == 0 && f.AlignmentWeight == 0 {
+		cohesionWeight = 1.0
+	}
+
+	queryRad := neighborRad
+	if f.RepelRadius > queryRad {
+		queryRad = f.RepelRadius
+	}
+	f.scratch = world.NeighborsInto(self.ID, queryRad, f.scratch[:0])
+
+	var flockMates []*Actor
+	if f.SameTagOnly {
+		flockMates = make([]*Actor, 0, len(f.scratch))
+		for _, other := range f.scratch {
+			if other.Tag == self.Tag && other.Position.DistSq(self.Position) <= neighborRad*neighborRad {
+				flockMates = append(flockMates, other)
+			}
+		}
+	} else {
+		flockMates = f.scratch
+	}
+
+	sep := SteerSeparation(self, flockMates, sepRad, maxSpeed).Scale(sepWeight)
+	align := SteerAlignment(self, flockMates, maxSpeed).Scale(alignWeight)
+	cohesion := SteerCohesion(self, flockMates, maxSpeed).Scale(cohesionWeight)
+
+	desired := sep.Add(align).Add(cohesion)
+
+	if f.WanderJitter > 0 {
+		rng := world.ActorRNG(self.ID)
+		wander := SteerWander(self.Velocity, rng, f.WanderJitter, maxSpeed)
+		desired = desired.Add(wander.Scale(0.35))
+	}
+
+	if f.AttractTag != "" && f.AttractWeight > 0 {
+		var closest *Actor
+		bestSq := math.MaxFloat64
+		for _, a := range world.Actors() {
+			if !a.destroyed && a.Tag == f.AttractTag {
+				if dSq := self.Position.DistSq(a.Position); dSq < bestSq {
+					bestSq = dSq
+					closest = a
+				}
+			}
+		}
+		if closest != nil {
+			desired = desired.Add(SteerSeek(self.Position, closest.Position, maxSpeed).Scale(f.AttractWeight))
+		}
+	}
+
+	if f.RepelTag != "" && f.RepelRadius > 0 && f.RepelWeight > 0 {
+		repelSq := f.RepelRadius * f.RepelRadius
+		for _, other := range f.scratch {
+			if other.Tag == f.RepelTag && self.Position.DistSq(other.Position) <= repelSq {
+				flee := SteerFlee(self.Position, other.Position, maxSpeed)
+				desired = desired.Add(flee.Scale(f.RepelWeight))
+			}
+		}
+	}
+
+	if f.BoundsRadius > 0 {
+		dist := self.Position.Dist(f.BoundsCenter)
+		if dist > f.BoundsRadius {
+			pull := SteerSeek(self.Position, f.BoundsCenter, maxSpeed)
+			over := (dist - f.BoundsRadius) / f.BoundsRadius
+			desired = desired.Add(pull.Scale(1.5 + over*2.0))
+		}
+	}
+
+	if desired.LenSq() <= 1e-12 {
+		rng := world.ActorRNG(self.ID)
+		desired = SteerWander(self.Velocity, rng, 0.25, maxSpeed)
+	} else {
+		desired = desired.ClampLen(maxSpeed)
+	}
+
+	ApplySteering(self, desired, maxForce, maxSpeed, dt)
 }
 
 // PatrolBehavior moves an Actor along an ordered sequence of waypoints in a

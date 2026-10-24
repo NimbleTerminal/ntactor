@@ -11,7 +11,7 @@ It is completely abstract and detached from any renderer, scene graph, or 3D eng
 
 - Headless simulations and unit tests
 - Pure glyph and terminal games (via [ntcanvas](https://nimbleterminal.dev/ntcanvas) or [Bubble Tea](https://github.com/charmbracelet/bubbletea))
-- 3D scene engines such as [nt3d](https://nimbleterminal.dev/nt3d) (via an external adapter that `ntactor` never imports)
+- 3D scene engines and point clouds such as [nt3d](https://nimbleterminal.dev/nt3d) (via an external adapter that `ntactor` never imports)
 
 The root module has **zero external dependencies** and never calls wall-clock APIs (`time.Now`) or global random generators. Given the same random seed and the same sequence of external `(dt, events)` frames, every simulation run is bit-deterministic.
 
@@ -43,7 +43,10 @@ func (myPatrolBehavior) Tick(dt float64, self *actor.Actor, world *actor.World) 
 }
 
 func main() {
-	world := actor.NewWorld(actor.Config{Seed: 42})
+	world := actor.NewWorld(actor.Config{
+		Seed:       42,
+		Perception: actor.NewGridIndex(4.0),
+	})
 
 	id := world.Spawn(actor.Actor{
 		Behavior: myPatrolBehavior{},
@@ -60,12 +63,12 @@ func main() {
 		dt, events := driver.Step()
 		world.Tick(dt, events)
 		// An external adapter reads world.Actors() and world.Intents() here
-		// to update terminal glyphs, nt3d scene nodes, or audio triggers.
+		// to update terminal glyphs, nt3d scene nodes, or point clouds.
 	}
 
 	a := world.ActorByID(id)
-	fmt.Printf("actor %d at (%.2f, %.2f) after %.2fs\n",
-		a.ID, a.Position.X, a.Position.Y, world.SimTime())
+	fmt.Printf("actor %d at (%.2f, %.2f) after %.2fs (hash=0x%016x)\n",
+		a.ID, a.Position.X, a.Position.Y, world.SimTime(), world.Hash())
 }
 ```
 
@@ -74,19 +77,21 @@ func main() {
 | File | Types & Helpers | Purpose |
 | --- | --- | --- |
 | `actor.go` | `ActorID`, `Actor`, `Behavior`, `BehaviorFunc`, `IdleBehavior`, `Intent`, `Event` | Core actor identity, local state, behavior contract, emitted intents, and external events |
-| `world.go` | `World`, `Config`, `SpatialIndex` | Single simulation clock (`SimTime`), allocation-light `Tick`, `Spawn`/`Destroy`, ID & tag queries, and radius perception (`ActorsWithinRadius`, `Neighbors`, `NearestActor`) |
+| `world.go` | `World`, `Config`, `SpatialIndex` | Single simulation clock (`SimTime`), allocation-light `Tick`, `World.Hash()`, `Spawn`/`Destroy`, ID & tag queries, and radius/cone/LOS perception (`ActorsWithinRadius`, `Neighbors`, `ActorsWithinCone`, `HasLineOfSight`, `NearestActor`) |
+| `spatial.go` | `GridIndex`, `NewGridIndex` | Uniform 2D/3D spatial hash grid accelerating neighborhood queries while preserving deterministic `ActorID` order |
 | `rng.go` | `RNG`, `RandomSource`, `NewRNG` | Seeded `xoshiro256**` PRNG, pluggable `RandomSource`, and per-actor streams (`World.ActorRNG`) |
 | `fsm.go` | `FSM`, `FSMState`, `Transition`, `StateID`, `WildcardState` | Deterministic Finite State Machine with `OnEnter`, `OnTick`, `OnExit`, and ordered conditional transitions |
-| `bt.go` | `BehaviorTree`, `BTNode`, `Sequence`, `Selector`, `Condition`, `Action`, `Invert` | Minimal Behavior Tree skeleton returning `StatusSuccess`, `StatusFailure`, or `StatusRunning` |
-| `steering.go` | `Vec3`, `Vec2`, `SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerWander`, `SteerSeparation`, `PatrolBehavior`, `WanderBehavior` | Abstract 2D/3D vector kinematics and classical steering helpers |
+| `bt.go` | `BehaviorTree`, `BTNode`, `Sequence`, `MemSequence`, `Selector`, `MemSelector`, `Parallel`, `Condition`, `Action`, `Invert`, `Cooldown`, `Timeout` | Stateless and stateful Behavior Tree composites, decorators, and leaves |
+| `steering.go` | `Vec3`, `Vec2`, `SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`, `SteerSeparation`, `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `FlockBehavior`, `PatrolBehavior`, `WanderBehavior` | Abstract 2D/3D vector kinematics, obstacle avoidance, and Reynolds Boids flocking |
 | `driver_live.go` | `LiveDriver`, `LiveConfig`, `Frame`, `EventLog`, `Driver` | Accumulates wall time (variable clamped `dt` or fixed `FixedDT`), injects live events, and records an `EventLog` |
 | `driver_historical.go` | `HistoricalDriver` | Replays a recorded `EventLog` or scripted `[]Frame` sequence for bit-exact historical determinism |
+| `codec.go` | `EncodeEventLogJSON`, `DecodeEventLogJSON`, `MarshalEventLogBinary`, `UnmarshalEventLogBinary` | Bounded JSON and compact binary serialization for recorded `EventLog` replays |
 
 ## Live vs. Historical replay
 
 External inputs (player commands, network messages, scripted spawns) enter the simulation only as `Event` values passed into `World.Tick(dt, events)`.
 
-`LiveDriver` can record every `(dt, events)` frame it produces into an `EventLog` without taking expensive state snapshots. Feeding that `EventLog` into `HistoricalDriver` on a fresh `World` initialized with the same `Seed` reproduces the exact simulation state at every tick:
+`LiveDriver` can record every `(dt, events)` frame it produces into an `EventLog` without taking expensive state snapshots. You can serialize that `EventLog` to JSON or binary bytes, and feed it into `HistoricalDriver` on a fresh `World` initialized with the same `Seed` to reproduce the exact simulation state (`World.Hash()`) at every tick:
 
 ```go
 // 1. Record a live run:
@@ -115,12 +120,9 @@ for _, a := range world.Actors() {
 	grid.SetText(ntcanvas.Point{X: int(a.Position.X), Y: int(a.Position.Y)}, glyphFor(a))
 }
 
-// 3D scene-graph adapter (e.g. nt3d):
+// 3D scene-graph or point-cloud adapter (e.g. nt3d):
 for _, a := range world.Actors() {
 	scene.SetNodePosition(nodeName(a.ID), a.Position.X, a.Position.Y, a.Position.Z)
-}
-for _, intent := range world.Intents() {
-	// Trigger sound, particle burst, or animation clip from intent.Kind
 }
 ```
 
@@ -130,12 +132,13 @@ The [`examples/`](examples/) directory is a separate module so UI dependencies s
 
 ```sh
 task run-replay                # Live run + historical replay check + glyph & 3D node adapters
-task run-replay -- -json       # Emit JSON report with 3D scene node transforms
-task run-arena                 # Interactive Bubble Tea + ntcanvas arena (b: beacon, i: intruder, r: replay)
-task run-arena -- -headless    # Run arena headlessly and print the rendered terminal frame
+task run-arena                 # Interactive terminal arena (b: beacon, i: intruder, f: flock wisps, r: replay)
+task run-arena -- -headless    # Run arena headlessly and print the dashboard
+task run-flock                 # Interactive Boids murmuration / particle-swarm demo (a: attractor, p: predator, r: replay)
+task run-flock -- -headless    # Run murmuration headlessly and print density grid + point-cloud stats
 ```
 
-See [examples/README.md](examples/README.md) for controls and flags.
+See [examples/README.md](examples/README.md) for controls and flags, and [ROADMAP.md](ROADMAP.md) for planned path-planning and navigation features.
 
 ## Contributing
 

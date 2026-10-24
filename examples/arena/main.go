@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Neomantra Corp.
 
 // Command arena runs an interactive terminal glyph simulation using ntactor
-// and an ntcanvas adapter, supporting live event injection and instant
-// historical replay from the recorded seed and event log.
+// and an ntcanvas adapter, supporting live event injection, Boids flocking,
+// and instant historical replay from the recorded seed and event log.
 package main
 
 import (
@@ -39,7 +39,10 @@ var guardWaypoints = [][]ntactor.Vec3{
 }
 
 func buildArenaWorld(seed uint64) *ntactor.World {
-	w := ntactor.NewWorld(ntactor.Config{Seed: seed})
+	w := ntactor.NewWorld(ntactor.Config{
+		Seed:       seed,
+		Perception: ntactor.NewGridIndex(4.0),
+	})
 
 	w.OnEvent("beacon", func(world *ntactor.World, ev ntactor.Event) {
 		pos := ev.Vector
@@ -93,7 +96,54 @@ func buildArenaWorld(seed uint64) *ntactor.World {
 		}
 	})
 
-	// Spawn two perimeter guards using an FSM.
+	w.OnEvent("flock", func(world *ntactor.World, _ ntactor.Event) {
+		rng := world.RNG()
+		center := ntactor.Vec2(
+			rng.FloatRange(-10, 10),
+			rng.FloatRange(-4, 4),
+		)
+		var firstID ntactor.ActorID
+		for i := 0; i < 6; i++ {
+			offset := rng.UnitVec2().Scale(rng.FloatRange(0.5, 2.5))
+			id := world.Spawn(ntactor.Actor{
+				Tag:      "wisp",
+				Position: center.Add(offset),
+				Velocity: rng.UnitVec2().Scale(6.0),
+				Behavior: &ntactor.FlockBehavior{
+					NeighborRadius:   5.0,
+					SeparationRadius: 2.0,
+					SeparationWeight: 1.7,
+					AlignmentWeight:  1.1,
+					CohesionWeight:   1.0,
+					WanderJitter:     0.2,
+					MaxSpeed:         7.5,
+					MaxForce:         20.0,
+					SameTagOnly:      true,
+					AttractTag:       "beacon",
+					AttractWeight:    1.2,
+					RepelTag:         "intruder",
+					RepelRadius:      7.0,
+					RepelWeight:      2.8,
+					BoundsCenter:     ntactor.Vec2(0, 0),
+					BoundsRadius:     float64(arenaHeight)/2 - 2,
+				},
+				State: &actorRoleState{
+					Name:         "Wisp",
+					Glyph:        "•",
+					BehaviorKind: "Flock",
+					Status:       "boids swarm",
+				},
+			})
+			if i == 0 {
+				firstID = id
+			}
+		}
+		if wisp := world.ActorByID(firstID); wisp != nil {
+			wisp.Emit(ntactor.Intent{Kind: "flock_spawned", Vector: center, Value: 6})
+		}
+	})
+
+	// Spawn two perimeter guards using an FSM and SteerPursue lead prediction.
 	for i, wp := range guardWaypoints {
 		patrol := &ntactor.PatrolBehavior{
 			Waypoints:     wp,
@@ -132,8 +182,8 @@ func buildArenaWorld(seed uint64) *ntactor.World {
 				}
 				if closest != nil {
 					st := self.State.(*actorRoleState)
-					st.Status = fmt.Sprintf("chasing #%d (%.1fm)", closest.ID, bestDist)
-					desired := ntactor.SteerSeek(self.Position, closest.Position, 11.0)
+					st.Status = fmt.Sprintf("pursuing #%d (%.1fm)", closest.ID, bestDist)
+					desired := ntactor.SteerPursue(self, closest, 0.8, 11.0)
 					ntactor.ApplySteering(self, desired, 25.0, 11.0, dt)
 					if bestDist <= 1.4 {
 						st.Score++
@@ -327,7 +377,7 @@ func newArenaModel(seed uint64) arenaModel {
 		world:      w,
 		liveDriver: live,
 		activity: []string{
-			fmt.Sprintf("[t=0.00s] World initialized (seed=%d): 2 FSM guards, 3 BehaviorTree scouts", seed),
+			fmt.Sprintf("[t=0.00s] World initialized (seed=%d, GridIndex=4.0): 2 FSM guards, 3 BehaviorTree scouts", seed),
 		},
 		grid:   grid,
 		canvas: c,
@@ -356,7 +406,7 @@ func (m *arenaModel) stepOnce() {
 	if m.replaying && m.histDriver != nil {
 		if m.histDriver.Done() {
 			m.replaying = false
-			m.appendActivity(fmt.Sprintf("[t=%.2fs] Historical replay complete — resumed LIVE recording", m.world.SimTime()))
+			m.appendActivity(fmt.Sprintf("[t=%.2fs] Historical replay complete (hash=0x%016x) — resumed LIVE", m.world.SimTime(), m.world.Hash()))
 		} else {
 			var dt float64
 			dt, evs = m.histDriver.Step()
@@ -374,11 +424,14 @@ func (m *arenaModel) stepOnce() {
 	for _, in := range m.world.Intents() {
 		switch in.Kind {
 		case "beacon_spawned":
-			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: beacon #%d spawned at (%.1f, %.1f) — scouts alerted",
+			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: beacon #%d spawned at (%.1f, %.1f) — scouts & wisps alerted",
 				m.world.SimTime(), in.ActorID, in.Vector.X, in.Vector.Y))
 		case "intruder_entered":
-			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: intruder #%d entered at (%.1f, %.1f) — guards intercepting!",
+			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: intruder #%d entered at (%.1f, %.1f) — guards pursuing!",
 				m.world.SimTime(), in.ActorID, in.Vector.X, in.Vector.Y))
+		case "flock_spawned":
+			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: spawned %d flocking wisps (•) around (%.1f, %.1f)",
+				m.world.SimTime(), int(in.Value), in.Vector.X, in.Vector.Y))
 		case "captured_intruder":
 			m.appendActivity(fmt.Sprintf("[t=%.2fs] intent: guard #%d captured intruder #%d",
 				m.world.SimTime(), in.ActorID, in.Target))
@@ -419,6 +472,10 @@ func (m arenaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "intruder"})
 			}
+		case "f":
+			if !m.replaying {
+				m.liveDriver.PushEvent(ntactor.Event{Kind: "flock"})
+			}
 		case "r":
 			log := m.liveDriver.Log()
 			if log.Len() > 0 {
@@ -454,22 +511,23 @@ func (m arenaModel) renderDashboard() string {
 		"SIMULATION & DRIVER",
 		fmt.Sprintf("  Driver : %s", driverDesc),
 		fmt.Sprintf("  Seed   : %d  |  Clock: %.2fs (dt=%.2fs)", m.world.Seed(), m.world.SimTime(), m.world.DT()),
+		fmt.Sprintf("  Hash   : 0x%016x  |  Index: GridIndex(4.0)", m.world.Hash()),
 		"",
 		"BEHAVIOR ROLES",
-		"  G / C : Guards (FSM: patrol · waypoints <-> intercept !)",
+		"  G / C : Guards (FSM: patrol · waypoints <-> SteerPursue !)",
 		"  s / S : Scouts (BehaviorTree: seek ✦ beacon | wander+separate)",
-		"  ✦     : Beacon (Idle, spawned by external Event)",
-		"  !     : Intruder (Wander, spawned by external Event)",
+		"  •     : Wisps  (FlockBehavior: Boids sep+align+cohesion, flee !)",
+		"  ✦ / ! : Beacon (Idle) / Intruder (Wander) spawned by Events",
 		"",
 		"ACTIVE ACTORS (world.Actors() in ID order)",
 		"  ID  Glyph  Role       Behavior  State                 Pos          Score",
 	)
 
 	actors := m.world.Actors()
-	maxShown := 6
+	maxShown := 5
 	for idx, a := range actors {
 		if idx >= maxShown {
-			rightLines = append(rightLines, fmt.Sprintf("  ... +%d more actors", len(actors)-maxShown))
+			rightLines = append(rightLines, fmt.Sprintf("  ... +%d more actors (including %d flocking wisps)", len(actors)-maxShown, len(m.world.FindByTag("wisp"))))
 			break
 		}
 		st, _ := a.State.(*actorRoleState)
@@ -517,7 +575,7 @@ func (m arenaModel) renderDashboard() string {
 		sb.WriteByte('\n')
 	}
 
-	sb.WriteString("\nCONTROLS: [b] drop beacon (✦) • [i] spawn intruder (!) • [r] replay recorded history from seed • [space] pause • [n] step tick • [x] reset • [q] quit")
+	sb.WriteString("\nCONTROLS: [b] beacon (✦) • [i] intruder (!) • [f] flock wisps (•) • [r] replay from seed • [space] pause • [n] step • [x] reset • [q] quit")
 	return sb.String()
 }
 
@@ -552,10 +610,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	m := newArenaModel(*seed)
 	if *headless {
 		for i := 0; i < *steps; i++ {
-			if i == 5 {
+			switch i {
+			case 5:
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "beacon"})
-			}
-			if i == 15 {
+			case 10:
+				m.liveDriver.PushEvent(ntactor.Event{Kind: "flock"})
+			case 15:
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "intruder"})
 			}
 			m.stepOnce()

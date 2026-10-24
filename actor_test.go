@@ -3,6 +3,7 @@
 package ntactor
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -704,6 +705,244 @@ func BenchmarkWorldTick(b *testing.B) {
 			Behavior: BehaviorFunc(func(dt float64, self *Actor, _ *World) {
 				Integrate(self, dt)
 			}),
+		})
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w.Tick(1.0/60.0, nil)
+	}
+}
+
+func TestGridIndexEquivalenceAndFlockDeterminism(t *testing.T) {
+	spawnFlockWorld := func(seed uint64, index SpatialIndex) *World {
+		w := NewWorld(Config{
+			Seed:       seed,
+			Perception: index,
+		})
+		w.Spawn(Actor{
+			Tag:      "beacon",
+			Position: Vec2(8, -5),
+			Behavior: Idle,
+		})
+		w.Spawn(Actor{
+			Tag:      "intruder",
+			Position: Vec2(-6, 4),
+			Behavior: &WanderBehavior{Speed: 5.0, Jitter: 0.4, Center: Vec2(0, 0), MaxRadius: 15.0},
+		})
+		for i := 0; i < 40; i++ {
+			pos := w.RNG().UnitVec2().Scale(w.RNG().FloatRange(1.0, 12.0))
+			vel := w.RNG().UnitVec2().Scale(4.0)
+			w.Spawn(Actor{
+				Tag:      "boid",
+				Position: pos,
+				Velocity: vel,
+				Behavior: &FlockBehavior{
+					NeighborRadius:   5.0,
+					SeparationRadius: 2.0,
+					SeparationWeight: 1.6,
+					AlignmentWeight:  1.0,
+					CohesionWeight:   1.0,
+					WanderJitter:     0.2,
+					MaxSpeed:         6.0,
+					MaxForce:         18.0,
+					SameTagOnly:      true,
+					AttractTag:       "beacon",
+					AttractWeight:    0.8,
+					RepelTag:         "intruder",
+					RepelRadius:      6.0,
+					RepelWeight:      2.5,
+					BoundsCenter:     Vec2(0, 0),
+					BoundsRadius:     20.0,
+				},
+			})
+		}
+		return w
+	}
+
+	wLinear := spawnFlockWorld(777, nil)
+	wGrid := spawnFlockWorld(777, NewGridIndex(4.0))
+
+	for step := 0; step < 60; step++ {
+		wLinear.Tick(0.05, nil)
+		wGrid.Tick(0.05, nil)
+		if wLinear.Hash() != wGrid.Hash() {
+			t.Fatalf("step %d: GridIndex world hash %x != linear scan world hash %x",
+				step, wGrid.Hash(), wLinear.Hash())
+		}
+		assertWorldsIdentical(t, step, wLinear, wGrid)
+	}
+}
+
+func TestConePerceptionAndLineOfSight(t *testing.T) {
+	// Occlude any target with X > 6.0 (e.g. a wall at X = 6).
+	w := NewWorld(Config{
+		Seed:       1,
+		Perception: NewGridIndex(4.0),
+		LineOfSight: func(_, to Vec3) bool {
+			return to.X <= 6.0
+		},
+	})
+
+	idFront := w.Spawn(Actor{Tag: "target", Position: Vec2(4, 0)}) // directly ahead, visible
+	_ = w.Spawn(Actor{Tag: "target", Position: Vec2(9, 0)})        // directly ahead, occluded by wall
+	_ = w.Spawn(Actor{Tag: "target", Position: Vec2(-3, 0)})       // behind cone
+	idAngle := w.Spawn(Actor{Tag: "target", Position: Vec2(3, 2)}) // ~33.7 deg off axis, inside 45 deg half-angle
+
+	visible := w.ActorsWithinCone(Vec2(0, 0), Vec2(1, 0), 12.0, math.Pi/4)
+	if len(visible) != 2 || visible[0].ID != idFront || visible[1].ID != idAngle {
+		t.Fatalf("expected [idFront=%d, idAngle=%d] in cone, got %+v", idFront, idAngle, visible)
+	}
+}
+
+func TestEventLogJSONAndBinaryCodecs(t *testing.T) {
+	const seed uint64 = 2026
+	wOrig := buildTestSimulationWorld(seed)
+	live := NewLiveDriver(LiveConfig{
+		Seed:      seed,
+		DefaultDT: 0.025,
+		Record:    true,
+	})
+	for i := 0; i < 40; i++ {
+		if i == 5 {
+			live.PushEvent(Event{
+				Kind:    "spawn_intruder",
+				Vector:  Vec2(-3.25, -4.5),
+				Value:   3.125,
+				Payload: "wave-1",
+			})
+		}
+		live.Tick(wOrig)
+	}
+	origHash := wOrig.Hash()
+	origLog := live.Log()
+
+	// 1. JSON round-trip
+	var jsonBuf bytes.Buffer
+	if err := EncodeEventLogJSON(&jsonBuf, origLog); err != nil {
+		t.Fatalf("EncodeEventLogJSON failed: %v", err)
+	}
+	decodedJSON, err := DecodeEventLogJSON(&jsonBuf)
+	if err != nil {
+		t.Fatalf("DecodeEventLogJSON failed: %v", err)
+	}
+	wJSON := buildTestSimulationWorld(decodedJSON.Seed)
+	NewHistoricalDriver(decodedJSON).RunAll(wJSON)
+	if wJSON.Hash() != origHash {
+		t.Fatalf("JSON round-trip world hash mismatch: %x vs %x", wJSON.Hash(), origHash)
+	}
+
+	// 2. Binary round-trip
+	binData, err := MarshalEventLogBinary(origLog)
+	if err != nil {
+		t.Fatalf("MarshalEventLogBinary failed: %v", err)
+	}
+	decodedBin, err := UnmarshalEventLogBinary(binData)
+	if err != nil {
+		t.Fatalf("UnmarshalEventLogBinary failed: %v", err)
+	}
+	wBin := buildTestSimulationWorld(decodedBin.Seed)
+	NewHistoricalDriver(decodedBin).RunAll(wBin)
+	if wBin.Hash() != origHash {
+		t.Fatalf("Binary round-trip world hash mismatch: %x vs %x", wBin.Hash(), origHash)
+	}
+}
+
+func TestStatefulBehaviorTreeNodes(t *testing.T) {
+	w := NewWorld(Config{Seed: 1})
+
+	// Test MemSequence: child 1 runs once, child 2 returns Running once then Success.
+	child1Runs := 0
+	child2Runs := 0
+	memSeq := MemSequence(
+		Action(func(_ float64, _ *Actor, _ *World) NodeStatus {
+			child1Runs++
+			return StatusSuccess
+		}),
+		Action(func(_ float64, _ *Actor, _ *World) NodeStatus {
+			child2Runs++
+			if child2Runs == 1 {
+				return StatusRunning
+			}
+			return StatusSuccess
+		}),
+	)
+
+	bt := NewBehaviorTree(memSeq)
+	w.Spawn(Actor{Behavior: bt})
+	w.Tick(0.1, nil)
+	if bt.LastStatus() != StatusRunning || child1Runs != 1 || child2Runs != 1 {
+		t.Fatalf("tick 1 unexpected: status=%v c1=%d c2=%d", bt.LastStatus(), child1Runs, child2Runs)
+	}
+	w.Tick(0.1, nil)
+	if bt.LastStatus() != StatusSuccess || child1Runs != 1 || child2Runs != 2 {
+		t.Fatalf("tick 2 expected MemSequence to resume at child 2 (c1=1, c2=2), got status=%v c1=%d c2=%d",
+			bt.LastStatus(), child1Runs, child2Runs)
+	}
+
+	// Test Cooldown and Timeout decorators + Parallel composite.
+	cooldownNode := Cooldown(0.5, Action(func(_ float64, _ *Actor, _ *World) NodeStatus {
+		return StatusSuccess
+	}))
+	timeoutNode := Timeout(0.35, Action(func(_ float64, _ *Actor, _ *World) NodeStatus {
+		return StatusRunning
+	}))
+	par := Parallel(1, cooldownNode, timeoutNode)
+
+	a := &Actor{}
+	// Tick at dt=0.1: cooldown succeeds (starts 0.5s cooldown), timeout is Running -> Parallel(1) succeeds!
+	if st := par.Evaluate(0.1, a, w); st != StatusSuccess {
+		t.Fatalf("expected Parallel(1) StatusSuccess on first evaluation, got %v", st)
+	}
+	// Next tick at dt=0.2: cooldown is on cooldown (Failure, 0.3s left), timeout is Running (0.2s elapsed) -> Parallel(1) is Running!
+	if st := par.Evaluate(0.2, a, w); st != StatusRunning {
+		t.Fatalf("expected Parallel(1) StatusRunning while timeout is running, got %v", st)
+	}
+	// Next tick at dt=0.2: cooldown still on cooldown (Failure, 0.1s left), timeout hits 0.4s >= 0.3s (Failure) -> Parallel(1) Fails!
+	if st := par.Evaluate(0.2, a, w); st != StatusFailure {
+		t.Fatalf("expected Parallel(1) StatusFailure when timeout expires during cooldown, got %v", st)
+	}
+}
+
+func TestAdvancedSteeringHelpers(t *testing.T) {
+	self := &Actor{ID: 1, Position: Vec2(0, 0), Velocity: Vec2(5, 0), Radius: 0.5}
+	target := &Actor{ID: 2, Position: Vec2(10, 0), Velocity: Vec2(0, 5)}
+
+	pursue := SteerPursue(self, target, 2.0, 10.0)
+	if pursue.X <= 0 || pursue.Y <= 0 {
+		t.Fatalf("expected SteerPursue to lead moving target into +X,+Y quadrant, got %+v", pursue)
+	}
+
+	evade := SteerEvade(self, target, 2.0, 10.0)
+	if evade.X >= 0 || evade.Y >= 0 {
+		t.Fatalf("expected SteerEvade to flee away into -X,-Y quadrant, got %+v", evade)
+	}
+
+	obstacles := []CircleObstacle{{Center: Vec2(4, 0.2), Radius: 1.5}}
+	avoid := SteerAvoidCircles(self, obstacles, 6.0, 10.0)
+	if avoid.LenSq() == 0 || avoid.Y >= 0 {
+		t.Fatalf("expected SteerAvoidCircles to deflect downward (-Y) around obstacle at (4, 0.2), got %+v", avoid)
+	}
+}
+
+func BenchmarkFlockGridIndex(b *testing.B) {
+	w := NewWorld(Config{
+		Seed:       42,
+		Perception: NewGridIndex(4.0),
+	})
+	for i := 0; i < 300; i++ {
+		w.Spawn(Actor{
+			Tag:      "boid",
+			Position: w.RNG().UnitVec2().Scale(w.RNG().FloatRange(0, 30)),
+			Velocity: w.RNG().UnitVec2().Scale(5.0),
+			Behavior: &FlockBehavior{
+				NeighborRadius:   4.0,
+				SeparationRadius: 1.8,
+				MaxSpeed:         6.0,
+				MaxForce:         18.0,
+				BoundsRadius:     35.0,
+			},
 		})
 	}
 

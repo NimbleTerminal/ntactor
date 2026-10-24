@@ -18,9 +18,13 @@ type Config struct {
 	// RNG is an optional custom RandomSource. If nil, the default xoshiro256**
 	// source seeded with Seed is used.
 	RNG RandomSource
-	// Perception is an optional SpatialIndex for radius queries. If nil,
-	// World scans its ordered actor slice directly.
+	// Perception is an optional SpatialIndex (such as NewGridIndex) for radius
+	// and cone queries. If nil, World scans its ordered actor slice directly.
 	Perception SpatialIndex
+	// LineOfSight is an optional predicate reporting whether an unobstructed line
+	// of sight exists between two positions. When nil, all positions are mutually
+	// visible.
+	LineOfSight func(from, to Vec3) bool
 	// EventHandler is an optional callback invoked in slice order for each
 	// external Event at the start of World.Tick before behaviors run.
 	EventHandler func(w *World, ev Event)
@@ -40,9 +44,11 @@ type World struct {
 	indexByID    map[ActorID]int
 	ticking      bool
 	pendingPurge bool
+	spatialDirty bool
 	events       []Event
 	intents      []Intent
 	perception   SpatialIndex
+	lineOfSight  func(from, to Vec3) bool
 	eventHandler func(w *World, ev Event)
 	kindHandlers map[string][]func(w *World, ev Event)
 }
@@ -56,6 +62,7 @@ func NewWorld(cfg Config) *World {
 		nextID:       1,
 		indexByID:    make(map[ActorID]int),
 		perception:   cfg.Perception,
+		lineOfSight:  cfg.LineOfSight,
 		eventHandler: cfg.EventHandler,
 	}
 }
@@ -96,6 +103,16 @@ func (w *World) TickCount() uint64 {
 	return w.tickCount
 }
 
+// HasLineOfSight reports whether an unobstructed line of sight exists between
+// from and to according to Config.LineOfSight. If no LineOfSight callback was
+// configured, it always returns true.
+func (w *World) HasLineOfSight(from, to Vec3) bool {
+	if w.lineOfSight == nil {
+		return true
+	}
+	return w.lineOfSight(from, to)
+}
+
 // OnEvent registers a deterministic handler for external Events of the given Kind.
 // Handlers execute in registration order at the start of World.Tick before
 // actor behaviors run.
@@ -125,6 +142,7 @@ func (w *World) Spawn(a Actor) ActorID {
 	actorPtr := &a
 	w.indexByID[id] = len(w.actors)
 	w.actors = append(w.actors, actorPtr)
+	w.spatialDirty = true
 	return id
 }
 
@@ -143,6 +161,7 @@ func (w *World) Destroy(id ActorID) bool {
 	target.world = nil
 	delete(w.indexByID, id)
 	delete(w.actorRNGs, id)
+	w.spatialDirty = true
 
 	if w.ticking {
 		w.pendingPurge = true
@@ -239,6 +258,13 @@ func (w *World) Intents() []Intent {
 	return w.intents
 }
 
+func (w *World) ensureSpatialIndex() {
+	if w.perception != nil && w.spatialDirty {
+		w.perception.Rebuild(w.actors)
+		w.spatialDirty = false
+	}
+}
+
 // Tick advances the simulation clock by dt (clamped to >= 0), dispatches
 // injected external events, and updates all active Actors in deterministic ID order.
 func (w *World) Tick(dt float64, events []Event) {
@@ -275,6 +301,7 @@ func (w *World) Tick(dt float64, events []Event) {
 
 	if w.perception != nil {
 		w.perception.Rebuild(w.actors)
+		w.spatialDirty = false
 	}
 
 	w.ticking = true
@@ -286,6 +313,7 @@ func (w *World) Tick(dt float64, events []Event) {
 		}
 	}
 	w.ticking = false
+	w.spatialDirty = true
 
 	if w.pendingPurge {
 		w.compactDestroyed()
@@ -305,6 +333,7 @@ func (w *World) ActorsWithinRadiusInto(center Vec3, radius float64, dst []*Actor
 		return dst
 	}
 	if w.perception != nil {
+		w.ensureSpatialIndex()
 		return w.perception.QueryRadius(center, radius, dst)
 	}
 	rSq := radius * radius
@@ -329,6 +358,22 @@ func (w *World) NeighborsInto(selfID ActorID, radius float64, dst []*Actor) []*A
 	if !ok || radius < 0 {
 		return dst
 	}
+	if w.perception != nil {
+		w.ensureSpatialIndex()
+		start := len(dst)
+		dst = w.perception.QueryRadius(self.Position, radius, dst)
+		write := start
+		for i := start; i < len(dst); i++ {
+			if dst[i].ID != selfID {
+				dst[write] = dst[i]
+				write++
+			}
+		}
+		for i := write; i < len(dst); i++ {
+			dst[i] = nil
+		}
+		return dst[:write]
+	}
 	rSq := radius * radius
 	for _, a := range w.actors {
 		if !a.destroyed && a.ID != selfID && a.Position.DistSq(self.Position) <= rSq {
@@ -336,6 +381,44 @@ func (w *World) NeighborsInto(selfID ActorID, radius float64, dst []*Actor) []*A
 		}
 	}
 	return dst
+}
+
+// ActorsWithinCone returns all active Actors within radius of origin whose
+// direction from origin lies within halfAngleRad (in radians) of forward and
+// that satisfy HasLineOfSight(origin, actor.Position), in deterministic ActorID order.
+func (w *World) ActorsWithinCone(origin, forward Vec3, radius, halfAngleRad float64) []*Actor {
+	return w.ActorsWithinConeInto(origin, forward, radius, halfAngleRad, nil)
+}
+
+// ActorsWithinConeInto appends to dst and returns all active Actors within the
+// specified vision cone and line-of-sight check.
+func (w *World) ActorsWithinConeInto(origin, forward Vec3, radius, halfAngleRad float64, dst []*Actor) []*Actor {
+	if radius < 0 || halfAngleRad < 0 {
+		return dst
+	}
+	fwd := forward.Normalize()
+	if fwd.LenSq() == 0 {
+		return dst
+	}
+	cosHalf := math.Cos(math.Min(math.Pi, halfAngleRad))
+
+	start := len(dst)
+	dst = w.ActorsWithinRadiusInto(origin, radius, dst)
+	write := start
+	for i := start; i < len(dst); i++ {
+		a := dst[i]
+		offset := a.Position.Sub(origin)
+		dLen := offset.Len()
+		inCone := dLen <= 1e-9 || offset.Scale(1.0/dLen).Dot(fwd) >= cosHalf-1e-12
+		if inCone && w.HasLineOfSight(origin, a.Position) {
+			dst[write] = a
+			write++
+		}
+	}
+	for i := write; i < len(dst); i++ {
+		dst[i] = nil
+	}
+	return dst[:write]
 }
 
 // NearestActor returns the closest active Actor to center within maxRadius
@@ -373,4 +456,50 @@ func (w *World) FindByTag(tag string) []*Actor {
 		}
 	}
 	return out
+}
+
+// Hash computes a deterministic 64-bit FNV-1a digest over the World's seed,
+// simulation clock, tick count, RNG draw count, and all active Actors' identity
+// and kinematics in deterministic ActorID order.
+func (w *World) Hash() uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	mixUint64 := func(v uint64) {
+		for range 8 {
+			h ^= v & 0xff
+			h *= prime64
+			v >>= 8
+		}
+	}
+	mixString := func(s string) {
+		mixUint64(uint64(len(s)))
+		for i := 0; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= prime64
+		}
+	}
+
+	mixUint64(w.seed)
+	mixUint64(math.Float64bits(w.simTime))
+	mixUint64(w.tickCount)
+	mixUint64(w.rng.Calls())
+
+	for _, a := range w.actors {
+		if a == nil || a.destroyed {
+			continue
+		}
+		mixUint64(uint64(a.ID))
+		mixString(a.Tag)
+		mixUint64(math.Float64bits(a.Position.X))
+		mixUint64(math.Float64bits(a.Position.Y))
+		mixUint64(math.Float64bits(a.Position.Z))
+		mixUint64(math.Float64bits(a.Velocity.X))
+		mixUint64(math.Float64bits(a.Velocity.Y))
+		mixUint64(math.Float64bits(a.Velocity.Z))
+		mixUint64(math.Float64bits(a.Radius))
+	}
+	return h
 }
