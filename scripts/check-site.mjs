@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
 
-const demos = ['arena', 'flock', 'nav'];
+const demos = ['arena', 'flock', 'nav', 'scene3d'];
 
 for (const file of [
   'index.html', 'site.css', 'site.js', 'wasm_exec.js', 'booba/booba.js',

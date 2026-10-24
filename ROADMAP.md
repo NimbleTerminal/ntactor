@@ -3,16 +3,10 @@
 What is open, roughly in priority order within each section, followed by what
 is already implemented.
 
-## Next: Sister-library demos & recordings
+## Next: Recordings & navigation follow-ups
 
-- [ ] **`nt3d` live 3D scene demo (`examples/scene3d`)**: drive `nt3d` instanced
-  meshes, `nt3d/aabbtree`, and `nt3d` point clouds from an `ntactor.World` in a
-  Bubble Tea terminal viewport with camera orbit.
 - [ ] **`ntrecord` demo tapes**: add deterministic `.tape` scripts to record
-  `arena`, `flock`, and `nav` GIFs/PNGs for the README.
-
-## Navigation follow-ups
-
+  `arena`, `flock`, `nav`, and `scene3d` GIFs/PNGs for the README.
 - [ ] **Dynamic local avoidance (ORCA / velocity obstacles)**: reciprocal
   collision avoidance for bi-directional doorway and narrow-corridor traffic.
 - [ ] **3D navigation graphs (`NavMesh` / 3D voxel grids)**: multi-floor and 3D
@@ -20,10 +14,16 @@ is already implemented.
 
 ## Done
 
+- [x] **`nt3d` live 3D scene demo (`examples/scene3d`)**: drive `nt3d` 3D
+  meshes (`BuildCylinder`, `BuildSphere`, `BuildTorus`, `BuildHeightfield`),
+  3D A\* path lines, and a 3D Boids murmuration point cloud from an
+  `ntactor.World` in a Bubble Tea viewport with mouse camera orbit, ray-cast
+  floor picking, and `HistoricalDriver` replay.
 - [x] **Browser WASM gallery (`web/`, `wasm.work`, `go-booba`)**: compile
-  `arena`, `flock`, and `nav` to `js/wasm` with `go-booba` and `ghostty-web`,
-  OSC 7501 action buttons, Node smoke tests (`scripts/smoke-demo.mjs`), and
-  GitHub Pages deployment (`.github/workflows/pages.yml`).
+  `arena`, `flock`, `nav`, and `scene3d` to `js/wasm` with `go-booba` and
+  `ghostty-web`, OSC 7501 action buttons, Node smoke tests
+  (`scripts/smoke-demo.mjs`), and GitHub Pages deployment
+  (`.github/workflows/pages.yml`).
 
 - [x] **Path planning & FlowField navigation (`nav.go`, `examples/nav`)**:
   `NavGraph`, `NodeID`, deterministic A\* (`FindPathNodes`, `FindPath`),

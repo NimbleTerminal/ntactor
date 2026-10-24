@@ -84,9 +84,10 @@ Building requires Go 1.26.8 or newer. See [`examples/README.md`](./examples/READ
 - **`task run-arena`** ([`examples/arena`](./examples/arena/main.go)) — interactive multi-actor tactical arena with `FSM` perimeter guards (`SteerPursue` lead prediction), `BehaviorTree` resource scouts, Reynolds Boids wisps (`FlockBehavior`), live event injection (`b`: beacon, `i`: intruder, `f`: flock wisps), and instant `HistoricalDriver` replay from seed (`r`).
 - **`task run-flock`** ([`examples/flock`](./examples/flock/main.go)) — Reynolds Boids murmuration (`FlockBehavior` + `GridIndex`) with dynamic attractors (`a`) and predators (`p`), adapted simultaneously to a contiguous 3D `PointCloudAdapter` slice and a terminal density grid.
 - **`task run-nav`** ([`examples/nav`](./examples/nav/main.go)) — interactive A\* pathfinding (`FindWorldPath`), supercover line-of-sight path smoothing (`SmoothPath`), weighted mud terrain (`░`), interactive wall toggling (`w`) and goal relocation (`g`), and Dijkstra `FlowField` crowd steering (`c`).
+- **`task run-scene3d`** ([`examples/scene3d`](./examples/scene3d/main.go)) — interactive 3D [`nt3d`](https://github.com/NimbleTerminal/nt3d) arena driving 3D cone guards (`FSM`), 3D sphere scouts (`BehaviorTree` + A\* path lines around 3D cylindrical pillars), spinning 3D torus beacons, and a 3D Boids murmuration point cloud (`SetNodeGeometry` / `PointStyle`) with mouse camera orbiting, ray-cast floor picking, and WebGPU/Software/Wireframe rendering.
 - **`task run-replay`** ([`examples/replay`](./examples/replay/main.go)) — CLI verification demo recording a live simulation into an `EventLog`, round-tripping through JSON/binary codecs, replaying via `HistoricalDriver`, and asserting identical `World.Hash()` digests.
 
-All three interactive examples compile to WebAssembly and run in the browser demo gallery via [`booba`](https://github.com/NimbleMarkets/go-booba), publishing their key bindings as interactive OSC 7501 action buttons above the terminal:
+All four interactive examples compile to WebAssembly and run in the browser demo gallery via [`booba`](https://github.com/NimbleMarkets/go-booba), publishing their key bindings as interactive OSC 7501 action buttons above the terminal:
 
 ```sh
 task serve-wasm-site   # builds web/demos/*.wasm, stages booba assets, serves http://localhost:8000/web/

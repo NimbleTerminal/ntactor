@@ -4,11 +4,13 @@ const demos = {
   arena: 'Tactical arena',
   flock: 'Boids murmuration',
   nav: 'Pathfinding & flow fields',
+  scene3d: '3D arena (nt3d)',
 };
 const help = {
   arena: 'b: spawn beacon · i: spawn intruder · f: spawn flock wisps · r: replay from seed · space: pause · n: step · x: reset · q: quit.',
   flock: 'a: move attractor · p: spawn predator · r: replay from seed · space: pause · n: step · x: reset · q: quit.',
   nav: 'arrows/hjkl: cursor · w: toggle wall · g: move goal · s: smooth path · c: spawn crowd · f: flow arrows · r: replay · q: quit.',
+  scene3d: 'drag/hjkl: orbit 3D camera · wheel/+/-: zoom · click floor/b: beacon · i: intruder · f: 3D boids · m: renderer · r: replay · q: quit.',
 };
 const requested = new URLSearchParams(location.search).get('demo');
 const demo = Object.hasOwn(demos, requested) ? requested : 'arena';

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const demo = process.argv[2];
-assert.ok(['arena', 'flock', 'nav'].includes(demo));
+assert.ok(['arena', 'flock', 'nav', 'scene3d'].includes(demo));
 
 vm.runInThisContext(await readFile('web/wasm_exec.js', 'utf8'));
 const go = new Go();
@@ -77,6 +77,11 @@ try {
     await send(' ', 'Nav [PAUSED]:');
     await send('s', 'smooth=false');
     await send('c', 'actors=16');
+  } else if (demo === 'scene3d') {
+    await send(' ', 'Scene3D [PAUSED]:');
+    await send('b', 'beacons=2');
+    await send('i', 'intruders=1');
+    await send('f', 'boids=56');
   }
 
   bubbletea_write(quit.keys[quit.preferred].key);

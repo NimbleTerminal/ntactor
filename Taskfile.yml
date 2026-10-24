@@ -87,13 +87,14 @@ tasks:
       - task: build-examples
 
   build-examples:
-    desc: 'Build bin/ntactor-replay, bin/ntactor-arena, bin/ntactor-flock, and bin/ntactor-nav'
+    desc: 'Build bin/ntactor-replay, bin/ntactor-arena, bin/ntactor-flock, bin/ntactor-nav, and bin/ntactor-scene3d'
     cmds:
       - mkdir -p bin
       - go -C examples build -mod=readonly -o ../bin/ntactor-replay ./replay
       - go -C examples build -mod=readonly -o ../bin/ntactor-arena ./arena
       - go -C examples build -mod=readonly -o ../bin/ntactor-flock ./flock
       - go -C examples build -mod=readonly -o ../bin/ntactor-nav ./nav
+      - go -C examples build -mod=readonly -o ../bin/ntactor-scene3d ./scene3d
 
   run-replay:
     desc: 'Run the live-recording and historical-replay verification demo'
@@ -117,6 +118,12 @@ tasks:
     interactive: true
     cmds:
       - go -C examples run -mod=readonly ./nav {{.CLI_ARGS}}
+
+  run-scene3d:
+    desc: 'Run the 3D nt3d arena + Boids point-cloud demo (pass -- -headless for CLI)'
+    interactive: true
+    cmds:
+      - go -C examples run -mod=readonly ./scene3d {{.CLI_ARGS}}
 
   test-wasm:
     desc: 'Run js/wasm tests via Node and go_js_wasm_exec'
@@ -142,7 +149,7 @@ tasks:
       CGO_ENABLED: '0'
     cmds:
       - mkdir -p web/demos
-      - for: [arena, flock, nav]
+      - for: [arena, flock, nav, scene3d]
         cmd: go -C examples build -o ../web/demos/{{.ITEM}}.wasm ./{{.ITEM}}
 
   build-wasm-site:
@@ -158,7 +165,7 @@ tasks:
     cmds:
       - node --check web/site.js
       - node scripts/check-site.mjs
-      - for: [arena, flock, nav]
+      - for: [arena, flock, nav, scene3d]
         cmd: node scripts/smoke-demo.mjs {{.ITEM}}
 
   serve-wasm-site:
