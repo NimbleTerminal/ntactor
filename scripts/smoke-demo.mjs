@@ -6,7 +6,7 @@ import vm from 'node:vm';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const demo = process.argv[2];
-assert.ok(['arena', 'flock', 'nav', 'scene3d'].includes(demo));
+assert.ok(['arena', 'flock', 'nav', 'scene3d', 'planner'].includes(demo));
 
 vm.runInThisContext(await readFile('web/wasm_exec.js', 'utf8'));
 const go = new Go();
@@ -82,6 +82,10 @@ try {
     await send('b', 'beacons=2');
     await send('i', 'intruders=1');
     await send('f', 'boids=56');
+  } else if (demo === 'planner') {
+    await send(' ', 'Planner [PAUSED]:');
+    await send('s', 'spec=astar_collector');
+    await send('e', 'spec=utility_hunter');
   }
 
   bubbletea_write(quit.keys[quit.preferred].key);

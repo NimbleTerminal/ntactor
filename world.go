@@ -51,6 +51,7 @@ type World struct {
 	lineOfSight  func(from, to Vec3) bool
 	eventHandler func(w *World, ev Event)
 	kindHandlers map[string][]func(w *World, ev Event)
+	bb           *Blackboard
 }
 
 // NewWorld constructs a deterministic World from cfg.
@@ -64,7 +65,16 @@ func NewWorld(cfg Config) *World {
 		perception:   cfg.Perception,
 		lineOfSight:  cfg.LineOfSight,
 		eventHandler: cfg.EventHandler,
+		bb:           NewBlackboard(),
 	}
+}
+
+// Blackboard returns the World's shared deterministic key-value memory store.
+func (w *World) Blackboard() *Blackboard {
+	if w.bb == nil {
+		w.bb = NewBlackboard()
+	}
+	return w.bb
 }
 
 // Seed returns the initial seed configured on the World.
@@ -486,6 +496,7 @@ func (w *World) Hash() uint64 {
 	mixUint64(math.Float64bits(w.simTime))
 	mixUint64(w.tickCount)
 	mixUint64(w.rng.Calls())
+	w.bb.mixHash(mixUint64, mixString)
 
 	for _, a := range w.actors {
 		if a == nil || a.destroyed {
@@ -500,6 +511,7 @@ func (w *World) Hash() uint64 {
 		mixUint64(math.Float64bits(a.Velocity.Y))
 		mixUint64(math.Float64bits(a.Velocity.Z))
 		mixUint64(math.Float64bits(a.Radius))
+		a.bb.mixHash(mixUint64, mixString)
 	}
 	return h
 }

@@ -4,6 +4,8 @@ package ntactor
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -1078,5 +1080,209 @@ func TestFlowFieldAndCrowdNavigation(t *testing.T) {
 	}
 	if arrived < 6 {
 		t.Fatalf("expected at least 6 of 8 flow-field actors to reach goal neighborhood, got %d", arrived)
+	}
+}
+
+func TestBlackboardAndSnapshotDeterminism(t *testing.T) {
+	w := NewWorld(Config{Seed: 99})
+	w.Blackboard().SetString("phase", "alpha")
+	w.Blackboard().SetFloat("alarm", 0.5)
+
+	id := w.Spawn(Actor{Tag: "scout", Position: Vec2(2, 3)})
+	a := w.ActorByID(id)
+	a.Blackboard().SetInt("ammo", 12)
+	a.Blackboard().SetBool("alert", true)
+	a.Blackboard().SetVec3("home", Vec3{X: 1, Y: 2, Z: 3})
+	a.Blackboard().SetActorID("leader", id)
+
+	entries := a.Blackboard().Entries()
+	if len(entries) != 4 || entries[0].Key != "alert" || entries[1].Key != "ammo" || entries[2].Key != "home" || entries[3].Key != "leader" {
+		t.Fatalf("expected sorted blackboard keys [alert ammo home leader], got %+v", entries)
+	}
+
+	h1 := w.Hash()
+	a.Blackboard().AddInt("ammo", -1)
+	h2 := w.Hash()
+	if h1 == h2 {
+		t.Fatal("expected World.Hash() to change when Actor Blackboard mutates")
+	}
+
+	snapJSON, err := w.SnapshotJSON()
+	if err != nil || len(snapJSON) == 0 {
+		t.Fatalf("SnapshotJSON failed: %v", err)
+	}
+}
+
+func TestDeclarativeSpecCompilationHotSwapAndRollout(t *testing.T) {
+	reg := NewStandardRegistry(StandardRegistryConfig{})
+	catJSON, err := reg.CatalogJSON()
+	if err != nil || len(catJSON) == 0 {
+		t.Fatalf("CatalogJSON failed: %v", err)
+	}
+
+	// Verify strict validation rejects unknown actions and out-of-range params.
+	badJSON := []byte(`{"type":"action","name":"teleport_to_moon"}`)
+	if _, err := reg.CompileJSON(badJSON); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("expected ErrInvalidSpec for unknown action, got %v", err)
+	}
+	badParamJSON := []byte(`{"type":"action","name":"wander","params":{"speed":-5}}`)
+	if _, err := reg.CompileJSON(badParamJSON); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("expected ErrInvalidSpec for negative speed, got %v", err)
+	}
+
+	// Build a Utility + Selector BehaviorSpec in JSON and hot-swap it via EventLog.
+	hunterSpecJSON := `{
+		"type": "utility",
+		"options": [
+			{
+				"name": "intercept_intruder",
+				"weight": 1.2,
+				"considerations": [
+					{
+						"name": "tag_count",
+						"params": {"tag": "intruder"},
+						"min": 0,
+						"max": 1,
+						"curve": {"kind": "step", "midpoint": 0.5}
+					}
+				],
+				"child": {
+					"type": "action",
+					"name": "pursue_tag",
+					"params": {
+						"tag": "intruder",
+						"speed": 10.0,
+						"capture_radius": 1.2,
+						"destroy_target": true,
+						"score_key": "captures",
+						"intent": "captured_intruder"
+					}
+				}
+			},
+			{
+				"name": "collect_beacon",
+				"weight": 1.0,
+				"considerations": [
+					{
+						"name": "tag_count",
+						"params": {"tag": "beacon"},
+						"min": 0,
+						"max": 1,
+						"curve": {"kind": "step", "midpoint": 0.5}
+					}
+				],
+				"child": {
+					"type": "action",
+					"name": "arrive_tag",
+					"params": {
+						"tag": "beacon",
+						"speed": 9.0,
+						"capture_radius": 1.2,
+						"destroy_target": true,
+						"score_key": "beacons",
+						"intent": "collected_beacon"
+					}
+				}
+			},
+			{
+				"name": "patrol_perimeter",
+				"weight": 0.2,
+				"child": {
+					"type": "action",
+					"name": "patrol_box",
+					"params": {"half_width": 6.0, "half_height": 4.0, "speed": 6.0}
+				}
+			}
+		]
+	}`
+
+	buildScenario := func(seed uint64) *World {
+		w := NewWorld(Config{Seed: seed, Perception: NewGridIndex(3.0)})
+		reg.RegisterSwapHandler(w, "set_behavior")
+		w.Spawn(Actor{
+			Tag:      "unit",
+			Position: Vec2(0, 0),
+			Behavior: Idle,
+		})
+		w.Spawn(Actor{
+			Tag:      "beacon",
+			Position: Vec2(4, 0),
+			Behavior: Idle,
+		})
+		w.Spawn(Actor{
+			Tag:      "intruder",
+			Position: Vec2(-3, 0),
+			Behavior: Idle,
+		})
+		return w
+	}
+
+	// 1. Live run: hot-swap unit #1's behavior at tick 0 via Event, record EventLog,
+	// round-trip through binary codec, and verify HistoricalDriver replay matches Hash!
+	liveWorld := buildScenario(42)
+	live := NewLiveDriver(LiveConfig{Seed: 42, DefaultDT: 0.05, Record: true})
+	live.PushEvent(Event{Kind: "set_behavior", Target: 1, Payload: hunterSpecJSON})
+
+	for range 60 {
+		dt, evs := live.Step()
+		liveWorld.Tick(dt, evs)
+	}
+	unit := liveWorld.ActorByID(1)
+	if unit.Blackboard().FloatOr("captures", 0) != 1 || unit.Blackboard().FloatOr("beacons", 0) != 1 {
+		t.Fatalf("expected unit to capture 1 intruder and collect 1 beacon, got captures=%v beacons=%v",
+			unit.Blackboard().FloatOr("captures", 0), unit.Blackboard().FloatOr("beacons", 0))
+	}
+
+	binBytes, err := MarshalEventLogBinary(live.Log())
+	if err != nil {
+		t.Fatalf("MarshalEventLogBinary failed: %v", err)
+	}
+	decodedLog, err := UnmarshalEventLogBinary(binBytes)
+	if err != nil {
+		t.Fatalf("UnmarshalEventLogBinary failed: %v", err)
+	}
+
+	replayWorld := buildScenario(decodedLog.Seed)
+	hist := NewHistoricalDriver(decodedLog)
+	for !hist.Done() {
+		dt, evs := hist.Step()
+		replayWorld.Tick(dt, evs)
+	}
+	if replayWorld.Hash() != liveWorld.Hash() {
+		t.Fatalf("historical replay hash mismatch after behavior hot-swap: got 0x%x, want 0x%x",
+			replayWorld.Hash(), liveWorld.Hash())
+	}
+
+	// 2. Counterfactual rollout comparison: compare hunterSpec against a passive wander spec.
+	var hunterSpec BehaviorSpec
+	if err := json.Unmarshal([]byte(hunterSpecJSON), &hunterSpec); err != nil {
+		t.Fatal(err)
+	}
+	wanderSpec := BehaviorSpec{
+		Type:   "action",
+		Name:   "wander",
+		Params: map[string]any{"speed": 4.0, "jitter": 0.3},
+	}
+
+	ranked, err := CompareRollouts(RolloutConfig{
+		BuildWorld:  buildScenario,
+		Registry:    reg,
+		Seed:        42,
+		TargetActor: 1,
+		Ticks:       60,
+		DT:          0.05,
+		Score: func(w *World, _ []IntentSummary) float64 {
+			u := w.ActorByID(1)
+			return u.Blackboard().FloatOr("captures", 0)*10 + u.Blackboard().FloatOr("beacons", 0)*5
+		},
+	}, map[string]BehaviorSpec{
+		"passive_wander": wanderSpec,
+		"utility_hunter": hunterSpec,
+	})
+	if err != nil {
+		t.Fatalf("CompareRollouts failed: %v", err)
+	}
+	if len(ranked) != 2 || ranked[0].Name != "utility_hunter" || ranked[0].Result.Score <= ranked[1].Result.Score {
+		t.Fatalf("expected utility_hunter to rank #1 with higher score, got %+v", ranked)
 	}
 }

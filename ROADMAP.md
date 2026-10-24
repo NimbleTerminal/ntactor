@@ -3,28 +3,54 @@
 What is open, roughly in priority order within each section, followed by what
 is already implemented.
 
-## Next: Recordings & navigation follow-ups
+## Next: Declarative Behavior Synthesis & Planner Extensions
+
+- [ ] **Declarative `FSM` specs in `BehaviorSpec`**: compile JSON state machines
+  (`states`, `transitions`, `wildcard` interrupts) alongside `BehaviorTree` and
+  `UtilitySelector` specs in `BehaviorRegistry`.
+- [ ] **Parameterized `BehaviorSpec` mutation / evolutionary search**:
+  deterministic parameter perturbation (`MutateSpec(rng, spec)`) paired with
+  `CompareRollouts` to auto-tune speeds, radii, and utility weights over
+  headless rollouts.
+- [ ] **Execution trace recording on `BehaviorTree` / `UtilitySelector`**:
+  per-tick active node path and consideration score breakdown for visual
+  behavior debugging and planner feedback loops.
+
+## Next: Navigation, Formations & Avoidance
+
+- [ ] **Predictive / reciprocal collision avoidance (`SteerAvoidActors`)**:
+  time-to-closest-approach velocity avoidance for bi-directional doorway and
+  narrow-corridor traffic.
+- [ ] **Squad & leader formations (`FollowLeaderBehavior`, `FormationOffsets`)**:
+  wedge/V, line, column, and ring slot offsets rotated by a leader Actor's
+  heading.
+- [ ] **3D navigation graphs (`WaypointGraph` / `NavMesh` / 3D voxel grids)**:
+  concrete 3D implementations of `NavGraph` for multi-floor and volumetric
+  routing.
+
+## Next: Recordings
 
 - [ ] **`ntrecord` demo tapes**: add deterministic `.tape` scripts to record
-  `arena`, `flock`, `nav`, and `scene3d` GIFs/PNGs for the README.
-- [ ] **Dynamic local avoidance (ORCA / velocity obstacles)**: reciprocal
-  collision avoidance for bi-directional doorway and narrow-corridor traffic.
-- [ ] **3D navigation graphs (`NavMesh` / 3D voxel grids)**: multi-floor and 3D
-  volumetric implementations of `NavGraph`.
+  `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs/PNGs for the README.
 
 ## Done
 
+- [x] **Declarative Behavior Synthesis, Utility AI, Blackboard & Rollouts (`blackboard.go`, `utility.go`, `spec.go`, `examples/planner`)**:
+  deterministic sorted `Blackboard` on `World` and `Actor` (folded into
+  `World.Hash()`), `World.SnapshotJSON()`, classical `UtilitySelector` +
+  `ResponseCurve`, `BehaviorRegistry` (`NewStandardRegistry`, `CatalogJSON`,
+  `CompileJSON`), `RegisterSwapHandler` for `Event`-driven behavior
+  hot-swapping, and `EvaluateRollout` / `CompareRollouts`.
 - [x] **`nt3d` live 3D scene demo (`examples/scene3d`)**: drive `nt3d` 3D
   meshes (`BuildCylinder`, `BuildSphere`, `BuildTorus`, `BuildHeightfield`),
   3D A\* path lines, and a 3D Boids murmuration point cloud from an
   `ntactor.World` in a Bubble Tea viewport with mouse camera orbit, ray-cast
   floor picking, and `HistoricalDriver` replay.
 - [x] **Browser WASM gallery (`web/`, `wasm.work`, `go-booba`)**: compile
-  `arena`, `flock`, `nav`, and `scene3d` to `js/wasm` with `go-booba` and
-  `ghostty-web`, OSC 7501 action buttons, Node smoke tests
+  `arena`, `flock`, `nav`, `scene3d`, and `planner` to `js/wasm` with
+  `go-booba` and `ghostty-web`, OSC 7501 action buttons, Node smoke tests
   (`scripts/smoke-demo.mjs`), and GitHub Pages deployment
   (`.github/workflows/pages.yml`).
-
 - [x] **Path planning & FlowField navigation (`nav.go`, `examples/nav`)**:
   `NavGraph`, `NodeID`, deterministic A\* (`FindPathNodes`, `FindPath`),
   2D occupancy/weighted `GridMap` with corner-clipping prevention, supercover
@@ -50,8 +76,9 @@ is already implemented.
   `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `FlockBehavior`,
   `PatrolBehavior`, and `WanderBehavior`.
 - [x] **Live & Historical Drivers + Replay Codecs (`driver_live.go`, `driver_historical.go`, `codec.go`)**:
-  `LiveDriver`, `HistoricalDriver`, `EventLog`, `EncodeEventLogJSON` /
+  `LiveDriver`, `HistoricalDriver`, `Frame`, `EventLog`, `EncodeEventLogJSON` /
   `DecodeEventLogJSON`, and `MarshalEventLogBinary` / `UnmarshalEventLogBinary`.
-- [x] **Examples (`examples/replay`, `examples/arena`, `examples/flock`, `examples/nav`)**:
+- [x] **Examples (`examples/replay`, `examples/arena`, `examples/flock`, `examples/nav`, `examples/scene3d`, `examples/planner`)**:
   headless replay verifier, interactive terminal arena dashboard, Boids
-  murmuration / point-cloud demo, and interactive A\* + FlowField maze demo.
+  murmuration / point-cloud demo, interactive A\* + FlowField maze demo, 3D
+  `nt3d` arena demo, and declarative behavior planner / rollout demo.

@@ -74,7 +74,20 @@ type Actor struct {
 	Intents  []Intent
 
 	world     *World
+	bb        *Blackboard
 	destroyed bool
+}
+
+// Blackboard returns the Actor's deterministic key-value memory store,
+// allocating it on first access if nil.
+func (a *Actor) Blackboard() *Blackboard {
+	if a == nil {
+		return nil
+	}
+	if a.bb == nil {
+		a.bb = NewBlackboard()
+	}
+	return a.bb
 }
 
 // Emit records an Intent for the current tick on both the Actor and its owning
