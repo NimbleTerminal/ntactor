@@ -1,0 +1,10 @@
+go 1.26.8
+
+use (
+	.
+	./examples
+)
+
+// go-booba's WASM runtime relies on the js/wasm Program wiring and OSC 7501
+// action/status bridge provided by the neomantra Bubble Tea v2 fork.
+replace charm.land/bubbletea/v2 => github.com/neomantra/bubbletea/v2 v2.0.0-20261009201241-c397c32a5074

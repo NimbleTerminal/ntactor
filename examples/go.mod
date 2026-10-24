@@ -5,13 +5,16 @@ go 1.26.8
 replace nimbleterminal.dev/ntactor => ..
 
 require (
+	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.0
+	github.com/NimbleMarkets/go-booba v0.10.3
 	nimbleterminal.dev/ntactor v0.0.0
 	nimbleterminal.dev/ntcanvas v0.1.1
 )
 
+tool github.com/NimbleMarkets/go-booba/cmd/booba-assets
+
 require (
-	charm.land/bubbles/v2 v2.2.1 // indirect
 	charm.land/lipgloss/v2 v2.0.6 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20261008173134-6b8d4baf91b4 // indirect
@@ -26,6 +29,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect

@@ -15,8 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"nimbleterminal.dev/ntactor"
+	"nimbleterminal.dev/ntactor/examples/internal/demohelp"
 	"nimbleterminal.dev/ntcanvas"
 )
 
@@ -287,6 +289,29 @@ func (m flockModel) Init() tea.Cmd {
 	return tickCmd()
 }
 
+func (m flockModel) Help() []key.Binding {
+	return []key.Binding{
+		demohelp.Key("Attractor", "a"),
+		demohelp.Key("Predator", "p"),
+		demohelp.Key("Replay log", "r"),
+		demohelp.Key("Pause", "space", " "),
+		demohelp.Key("Step", "n"),
+		demohelp.Key("Reset", "x"),
+		demohelp.Key("Quit", "q", "ctrl+c"),
+	}
+}
+
+func (m flockModel) Summary() string {
+	mode := "LIVE"
+	if m.replaying && m.histDriver != nil {
+		mode = fmt.Sprintf("REPLAY %d/%d", m.histDriver.Index(), m.histDriver.Len())
+	} else if m.paused {
+		mode = "PAUSED"
+	}
+	return fmt.Sprintf("Flock [%s]: tick=%d boids=%d predators=%d attractors=%d hash=0x%016x",
+		mode, m.world.TickCount(), len(m.cloud.Points), len(m.world.FindByTag("predator")), len(m.world.FindByTag("attractor")), m.world.Hash())
+}
+
 func (m flockModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
@@ -294,10 +319,11 @@ func (m flockModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepOnce()
 		}
 		return m, tickCmd()
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+	case tea.KeyMsg:
+		if demohelp.Quit(msg) {
 			return m, tea.Quit
+		}
+		switch msg.String() {
 		case "space", " ":
 			m.paused = !m.paused
 		case "n":
@@ -305,10 +331,12 @@ func (m flockModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "attractor"})
+				m.stepOnce()
 			}
 		case "p":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "predator"})
+				m.stepOnce()
 			}
 		case "r":
 			log := m.liveDriver.Log()
@@ -318,6 +346,9 @@ func (m flockModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.replaying = true
 				m.paused = false
 			}
+		case "x":
+			m = newFlockModel(m.seed, m.boidCount)
+			return m, nil
 		}
 	}
 	var cmd tea.Cmd
@@ -379,7 +410,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	if err := demohelp.Run(m); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

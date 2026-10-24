@@ -118,6 +118,60 @@ tasks:
     cmds:
       - go -C examples run -mod=readonly ./nav {{.CLI_ARGS}}
 
+  test-wasm:
+    desc: 'Run js/wasm tests via Node and go_js_wasm_exec'
+    env:
+      GOOS: 'js'
+      GOARCH: 'wasm'
+      GOWORK: '{{.ROOT_DIR}}/wasm.work'
+    cmds:
+      - |
+        EXEC="$(go env GOROOT)/lib/wasm/go_js_wasm_exec"
+        if [ ! -x "$EXEC" ]; then
+          EXEC="$(go env GOROOT)/misc/wasm/go_js_wasm_exec"
+        fi
+        go test -exec="$EXEC" ./...
+        go -C examples test -exec="$EXEC" ./...
+
+  build-wasm:
+    desc: 'Compile all interactive example WASM binaries into web/demos/'
+    env:
+      GOOS: 'js'
+      GOARCH: 'wasm'
+      GOWORK: '{{.ROOT_DIR}}/wasm.work'
+      CGO_ENABLED: '0'
+    cmds:
+      - mkdir -p web/demos
+      - for: [arena, flock, nav]
+        cmd: go -C examples build -o ../web/demos/{{.ITEM}}.wasm ./{{.ITEM}}
+
+  build-wasm-site:
+    desc: 'Assemble the full WASM demo gallery into ./web for local serving or GitHub Pages'
+    cmds:
+      - task: build-wasm
+      - go -C examples tool booba-assets --no-index ../web
+      - cp LICENSE web/LICENSE
+      - task: check-site
+
+  check-site:
+    desc: 'Check JavaScript syntax, site assets, and smoke-test all WASM demos'
+    cmds:
+      - node --check web/site.js
+      - node scripts/check-site.mjs
+      - for: [arena, flock, nav]
+        cmd: node scripts/smoke-demo.mjs {{.ITEM}}
+
+  serve-wasm-site:
+    desc: 'Build and serve the WASM demo gallery at http://localhost:8000/web/'
+    cmds:
+      - task: build-wasm-site
+      - python3 -m http.server 8000 --bind 127.0.0.1
+
+  clean-wasm-site:
+    desc: 'Remove generated WASM assets from ./web while keeping tracked HTML/JS/CSS'
+    cmds:
+      - rm -rf web/demos web/booba web/ghostty-web web/wasm_exec.js web/app.wasm web/LICENSE
+
   ci:
     desc: 'Full portable CI gate'
     cmds:
@@ -132,4 +186,5 @@ tasks:
   clean:
     desc: 'Remove generated binaries and task artifacts'
     cmds:
+      - task: clean-wasm-site
       - rm -rf bin dist .task

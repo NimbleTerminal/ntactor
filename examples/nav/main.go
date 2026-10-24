@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"nimbleterminal.dev/ntactor"
+	"nimbleterminal.dev/ntactor/examples/internal/demohelp"
 	"nimbleterminal.dev/ntcanvas"
 )
 
@@ -348,6 +350,31 @@ func (m navModel) Init() tea.Cmd {
 	return tickCmd()
 }
 
+func (m navModel) Help() []key.Binding {
+	return []key.Binding{
+		demohelp.Key("Toggle wall", "w"),
+		demohelp.Key("Move goal", "g"),
+		demohelp.Key("Smooth path", "s"),
+		demohelp.Key("Spawn crowd", "c"),
+		demohelp.Key("Flow arrows", "f"),
+		demohelp.Key("Replay log", "r"),
+		demohelp.Key("Pause", "space", " "),
+		demohelp.Key("Step", "n"),
+		demohelp.Key("Quit", "q", "ctrl+c"),
+	}
+}
+
+func (m navModel) Summary() string {
+	mode := "LIVE"
+	if m.replaying && m.histDriver != nil {
+		mode = fmt.Sprintf("REPLAY %d/%d", m.histDriver.Index(), m.histDriver.Len())
+	} else if m.paused {
+		mode = "PAUSED"
+	}
+	return fmt.Sprintf("Nav [%s]: tick=%d goal=(%d,%d) smooth=%v actors=%d hash=0x%016x",
+		mode, m.sim.world.TickCount(), m.sim.goalCellX, m.sim.goalCellY, m.sim.smoothPath, m.sim.world.Count(), m.sim.world.Hash())
+}
+
 func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
@@ -355,10 +382,11 @@ func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepOnce()
 		}
 		return m, tickCmd()
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+	case tea.KeyMsg:
+		if demohelp.Quit(msg) {
 			return m, tea.Quit
+		}
+		switch msg.String() {
 		case "space", " ":
 			m.paused = !m.paused
 		case "n":
@@ -385,6 +413,7 @@ func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Kind:   "toggle_wall",
 					Vector: ntactor.Vec2(float64(m.cursorX), float64(m.cursorY)),
 				})
+				m.stepOnce()
 			}
 		case "g":
 			if !m.replaying {
@@ -392,14 +421,17 @@ func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Kind:   "set_goal",
 					Vector: ntactor.Vec2(float64(m.cursorX), float64(m.cursorY)),
 				})
+				m.stepOnce()
 			}
 		case "s":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "toggle_smooth"})
+				m.stepOnce()
 			}
 		case "c":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "spawn_crowd"})
+				m.stepOnce()
 			}
 		case "f":
 			m.showFlow = !m.showFlow
@@ -462,7 +494,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	if err := demohelp.Run(m); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

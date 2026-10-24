@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ntactor · deterministic actors, behaviors &amp; navigation</title>
+  <link rel="stylesheet" href="site.css?v=1">
+</head>
+<body>
+  <header><a class="brand" href="./">ntactor<span>Deterministic actors, behaviors, flocking &amp; pathfinding.</span></a><a href="https://github.com/nimbleterminal/ntactor">Source ↗</a></header>
+  <main>
+    <nav aria-label="Examples">
+      <a href="?demo=arena" data-demo="arena"><strong>Tactical arena</strong><span>Multi-actor arena with FSM perimeter guards, BehaviorTree scouts, Boids wisps, and instant replay from seed.</span></a>
+      <a href="?demo=flock" data-demo="flock"><strong>Boids murmuration</strong><span>Reynolds Boids flocking (Separation, Alignment, Cohesion) with GridIndex spatial hashing and predators.</span></a>
+      <a href="?demo=nav" data-demo="nav"><strong>Pathfinding &amp; flow fields</strong><span>Deterministic A* pathfinding, line-of-sight string pulling, weighted terrain, and FlowField crowd steering.</span></a>
+    </nav>
+    <section class="demo" aria-label="Live terminal example">
+      <div class="toolbar"><h1 id="title">Tactical arena</h1><a id="restart" href="?demo=arena">Restart ↻</a></div>
+      <div id="controls" role="group" aria-label="Terminal controls"></div>
+      <div class="terminal-frame"><div id="terminal"></div></div>
+      <p id="status" role="status">Starting terminal…</p>
+      <p id="help">Click the terminal to focus. Press q to quit; Restart starts a fresh session.</p>
+    </section>
+  </main>
+  <footer>
+    <span>Powered by <a href="https://github.com/NimbleMarkets/go-booba">booba</a>. <a href="LICENSE">Code license</a></span>
+    <span class="credit">Made with ❤️🤖🔥 for you by <a href="https://nimble.markets">Nimble.Markets</a></span>
+  </footer>
+  <script src="wasm_exec.js"></script>
+  <script type="module" src="site.js"></script>
+</body>
+</html>

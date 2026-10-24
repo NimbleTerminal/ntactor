@@ -14,8 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"nimbleterminal.dev/ntactor"
+	"nimbleterminal.dev/ntactor/examples/internal/demohelp"
 	"nimbleterminal.dev/ntcanvas"
 )
 
@@ -448,6 +450,24 @@ func (m arenaModel) Init() tea.Cmd {
 	return tickCmd()
 }
 
+func (m arenaModel) Help() []key.Binding {
+	return []key.Binding{
+		demohelp.Key("Beacon", "b"),
+		demohelp.Key("Intruder", "i"),
+		demohelp.Key("Flock wisps", "f"),
+		demohelp.Key("Replay log", "r"),
+		demohelp.Key("Pause", "space", " "),
+		demohelp.Key("Step", "n"),
+		demohelp.Key("Reset", "x"),
+		demohelp.Key("Quit", "q", "ctrl+c"),
+	}
+}
+
+func (m arenaModel) Summary() string {
+	return fmt.Sprintf("Arena [%s]: tick=%d simTime=%.2fs actors=%d hash=0x%016x",
+		m.currentModeLabel(), m.world.TickCount(), m.world.SimTime(), m.world.Count(), m.world.Hash())
+}
+
 func (m arenaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tickMsg:
@@ -455,10 +475,11 @@ func (m arenaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stepOnce()
 		}
 		return m, tickCmd()
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
+	case tea.KeyMsg:
+		if demohelp.Quit(msg) {
 			return m, tea.Quit
+		}
+		switch msg.String() {
 		case "space", " ":
 			m.paused = !m.paused
 			syncCanvasAdapter(m.grid, m.world, m.currentModeLabel())
@@ -467,14 +488,17 @@ func (m arenaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "b":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "beacon"})
+				m.stepOnce()
 			}
 		case "i":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "intruder"})
+				m.stepOnce()
 			}
 		case "f":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "flock"})
+				m.stepOnce()
 			}
 		case "r":
 			log := m.liveDriver.Log()
@@ -624,7 +648,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	if _, err := tea.NewProgram(m).Run(); err != nil {
+	if err := demohelp.Run(m); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
