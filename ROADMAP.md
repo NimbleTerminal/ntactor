@@ -3,24 +3,19 @@
 What is open, roughly in priority order within each section, followed by what
 is already implemented.
 
-## Next: Navigation, Formations & Avoidance
-
-- [ ] **Predictive / reciprocal collision avoidance (`SteerAvoidActors`)**:
-  time-to-closest-approach velocity avoidance for bi-directional doorway and
-  narrow-corridor traffic.
-- [ ] **Squad & leader formations (`FollowLeaderBehavior`, `FormationOffsets`)**:
-  wedge/V, line, column, and ring slot offsets rotated by a leader Actor's
-  heading.
-- [ ] **3D navigation graphs (`WaypointGraph` / `NavMesh` / 3D voxel grids)**:
-  concrete 3D implementations of `NavGraph` for multi-floor and volumetric
-  routing.
-
 ## Next: Recordings
 
 - [ ] **`ntrecord` demo tapes**: add deterministic `.tape` scripts to record
   `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs/PNGs for the README.
 
 ## Done
+
+- [x] **Predictive Collision Avoidance, Squad Formations, and 3D Navigation (`steering.go`, `nav.go`, `spec.go`)**:
+  reciprocal time-to-closest-approach avoidance (`SteerAvoidActors`), squad
+  formations (`FormationKind`, `FormationOffsets`, `FormationWorldPosition`,
+  `FollowLeaderBehavior`, `"follow_leader"` registry action), and 3D `NavGraph`
+  implementations (`WaypointGraph` and `VoxelGrid` with 3D `HasLineOfSight`,
+  `SmoothPath`, and `FindWorldPath`).
 
 - [x] **Declarative `FSM` specs, `ExecutionTrace`, and Evolutionary Spec Tuning (`fsm.go`, `bt.go`, `utility.go`, `spec.go`, `examples/planner`)**:
   declarative `"fsm"` `BehaviorSpec` (`FSMStateSpec`, `FSMTransitionSpec` with

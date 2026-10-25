@@ -339,6 +339,98 @@ func SteerAvoidCircles(self *Actor, obstacles []CircleObstacle, lookahead, maxSp
 	return lateral
 }
 
+// SteerAvoidActors computes a predictive, reciprocal collision-avoidance velocity
+// against moving neighbors over timeHorizon seconds using time-to-closest-approach
+// (TCPA). When two Actors approach head-on in a corridor or doorway, both deflect
+// to their respective starboard (right-hand) sides to pass without deadlocking.
+func SteerAvoidActors(self *Actor, neighbors []*Actor, timeHorizon, maxSpeed float64) Vec3 {
+	if self == nil || len(neighbors) == 0 || timeHorizon <= 0 || maxSpeed <= 0 {
+		return Vec3{}
+	}
+	rSelf := self.Radius
+	if rSelf <= 0 {
+		rSelf = 0.5
+	}
+
+	var totalAvoid Vec3
+	for _, other := range neighbors {
+		if other == nil || other.ID == self.ID {
+			continue
+		}
+		rOther := other.Radius
+		if rOther <= 0 {
+			rOther = 0.5
+		}
+		clearance := (rSelf + rOther) * 1.25
+
+		relPos := other.Position.Sub(self.Position)
+		dist := relPos.Len()
+		relVel := self.Velocity.Sub(other.Velocity)
+		relSpeedSq := relVel.LenSq()
+
+		tcpa := 0.0
+		if dist > clearance {
+			if relSpeedSq <= 1e-12 {
+				continue
+			}
+			tcpa = relPos.Dot(relVel) / relSpeedSq
+			if tcpa < 0 || tcpa > timeHorizon {
+				continue
+			}
+		}
+
+		futSelf := self.Position.Add(self.Velocity.Scale(tcpa))
+		futOther := other.Position.Add(other.Velocity.Scale(tcpa))
+		miss := futSelf.Sub(futOther)
+		missDist := miss.Len()
+		if missDist >= clearance {
+			continue
+		}
+
+		timeFactor := 1.0 - (tcpa / timeHorizon)
+		if timeFactor < 0.1 {
+			timeFactor = 0.1
+		}
+		penetration := (clearance - missDist) / clearance
+		urgency := timeFactor * (0.5 + 0.5*penetration)
+
+		fwd := relVel.Normalize()
+		if fwd.LenSq() <= 1e-12 {
+			fwd = relPos.Normalize()
+		}
+		if fwd.LenSq() <= 1e-12 {
+			fwd = Vec2(1, 0)
+		}
+
+		// Right-hand (starboard) lateral vector relative to closing direction.
+		// Because relVel(B, A) = -relVel(A, B), head-on Actors receive opposite
+		// world-space right vectors and reciprocally split into two lanes.
+		right := Vec3{X: fwd.Y, Y: -fwd.X, Z: 0}.Normalize()
+		if right.LenSq() <= 1e-12 {
+			right = Vec3{X: 0, Y: -1, Z: 0}
+		}
+
+		lat := miss.Sub(fwd.Scale(miss.Dot(fwd)))
+		var steerDir Vec3
+		if lat.LenSq() > 1e-3 {
+			// Bias lateral miss slightly toward starboard so near-collinear paths stay consistent.
+			steerDir = lat.Normalize().Add(right.Scale(0.35)).Normalize()
+		} else {
+			steerDir = right
+		}
+		if dist < clearance {
+			away := self.Position.Sub(other.Position).Normalize()
+			steerDir = steerDir.Add(away).Normalize()
+		}
+		totalAvoid = totalAvoid.Add(steerDir.Scale(urgency))
+	}
+
+	if totalAvoid.LenSq() <= 1e-12 {
+		return Vec3{}
+	}
+	return totalAvoid.Normalize().Scale(maxSpeed)
+}
+
 // FlockBehavior implements Reynolds Boids flocking (Separation, Alignment, and
 // Cohesion) with optional target attraction, threat repulsion, and arena containment.
 // It can drive swarms of actors or particle-like boid clouds.
@@ -536,4 +628,164 @@ func (w *WanderBehavior) Tick(dt float64, self *Actor, world *World) {
 		maxForce = w.Speed * 4.0
 	}
 	ApplySteering(self, desired, maxForce, w.Speed, dt)
+}
+
+// FormationKind identifies a geometric squad formation pattern relative to a leader.
+type FormationKind string
+
+const (
+	// FormationWedge arranges followers in a V / chevron behind the leader.
+	FormationWedge FormationKind = "wedge"
+	// FormationLine arranges followers abreast (side-by-side) perpendicular to the leader's heading.
+	FormationLine FormationKind = "line"
+	// FormationColumn arranges followers single-file behind the leader.
+	FormationColumn FormationKind = "column"
+	// FormationRing arranges followers evenly on a circle around the leader.
+	FormationRing FormationKind = "ring"
+)
+
+// FormationOffsets computes count local-space slot offsets for the given
+// FormationKind and inter-slot spacing. In local formation coordinates, +X points
+// along the leader's forward heading and +Y points to the leader's left (port) side.
+func FormationOffsets(kind FormationKind, count int, spacing float64) []Vec3 {
+	if count <= 0 {
+		return nil
+	}
+	if spacing <= 0 || math.IsNaN(spacing) || math.IsInf(spacing, 0) {
+		spacing = 2.0
+	}
+	offsets := make([]Vec3, count)
+	switch kind {
+	case FormationLine:
+		mid := float64(count-1) * 0.5
+		for i := 0; i < count; i++ {
+			lat := (float64(i) - mid) * spacing
+			offsets[i] = Vec2(-spacing*0.5, lat)
+		}
+	case FormationColumn:
+		for i := 0; i < count; i++ {
+			offsets[i] = Vec2(-float64(i+1)*spacing, 0)
+		}
+	case FormationRing:
+		radius := math.Max(spacing, float64(count)*spacing/(2.0*math.Pi))
+		for i := 0; i < count; i++ {
+			theta := 2.0 * math.Pi * float64(i) / float64(count)
+			offsets[i] = Vec2(radius*math.Cos(theta), radius*math.Sin(theta))
+		}
+	default: // FormationWedge
+		for i := 0; i < count; i++ {
+			rank := (i / 2) + 1
+			sign := 1.0
+			if i%2 == 1 {
+				sign = -1.0
+			}
+			offsets[i] = Vec2(-float64(rank)*spacing, sign*float64(rank)*spacing*0.85)
+		}
+	}
+	return offsets
+}
+
+// FormationWorldPosition transforms a local formation slot offset (where +X is
+// forward and +Y is left) into world space using leaderPos and leaderHeading.
+func FormationWorldPosition(leaderPos, leaderHeading, localOffset Vec3) Vec3 {
+	hx, hy := leaderHeading.X, leaderHeading.Y
+	hLen := math.Hypot(hx, hy)
+	if hLen <= 1e-9 {
+		hx, hy = 1.0, 0.0
+	} else {
+		hx /= hLen
+		hy /= hLen
+	}
+	// Forward basis = (hx, hy), Left basis = (-hy, hx)
+	wx := leaderPos.X + localOffset.X*hx - localOffset.Y*hy
+	wy := leaderPos.Y + localOffset.X*hy + localOffset.Y*hx
+	wz := leaderPos.Z + localOffset.Z
+	return Vec3{X: wx, Y: wy, Z: wz}
+}
+
+// FollowLeaderBehavior steers a follower Actor to maintain a rotated formation
+// slot offset relative to a leader Actor while clearing the leader's forward
+// path and avoiding collisions with nearby squadmates.
+type FollowLeaderBehavior struct {
+	LeaderID          ActorID
+	LeaderTag         string
+	SlotOffset        Vec3
+	MaxSpeed          float64
+	MaxForce          float64
+	SlowRadius        float64
+	SeparationRadius  float64
+	SeparationWeight  float64
+	AvoidLeaderRadius float64
+
+	lastHeading Vec3
+	scratch     []*Actor
+}
+
+// Tick updates the follower's velocity to track its formation slot behind the leader.
+func (b *FollowLeaderBehavior) Tick(dt float64, self *Actor, world *World) {
+	if b == nil || self == nil || world == nil || dt <= 0 {
+		return
+	}
+	var leader *Actor
+	if b.LeaderID != InvalidActorID {
+		leader = world.ActorByID(b.LeaderID)
+	}
+	if leader == nil && b.LeaderTag != "" {
+		for _, a := range world.FindByTag(b.LeaderTag) {
+			if a.ID != self.ID {
+				leader = a
+				break
+			}
+		}
+	}
+	if leader == nil || leader.ID == self.ID {
+		return
+	}
+
+	maxSpeed := b.MaxSpeed
+	if maxSpeed <= 0 {
+		maxSpeed = 7.0
+	}
+	maxForce := b.MaxForce
+	if maxForce <= 0 {
+		maxForce = maxSpeed * 4.0
+	}
+	slowRad := b.SlowRadius
+	if slowRad <= 0 {
+		slowRad = 2.5
+	}
+	sepRad := b.SeparationRadius
+	if sepRad <= 0 {
+		sepRad = 2.0
+	}
+	sepWeight := b.SeparationWeight
+	if sepWeight <= 0 {
+		sepWeight = 1.2
+	}
+	avoidLeaderRad := b.AvoidLeaderRadius
+	if avoidLeaderRad <= 0 {
+		avoidLeaderRad = 2.0
+	}
+
+	if leader.Velocity.LenSq() > 1e-4 {
+		b.lastHeading = leader.Velocity.Normalize()
+	} else if b.lastHeading.LenSq() <= 1e-9 {
+		b.lastHeading = Vec2(1, 0)
+	}
+
+	slotPos := FormationWorldPosition(leader.Position, b.lastHeading, b.SlotOffset)
+	desired := SteerArrive(self.Position, slotPos, maxSpeed, slowRad)
+
+	// If follower is directly ahead of the moving leader, step aside laterally.
+	aheadCenter := leader.Position.Add(b.lastHeading.Scale(avoidLeaderRad))
+	if self.Position.Dist(aheadCenter) < avoidLeaderRad {
+		evade := SteerEvade(self, leader, 0.5, maxSpeed)
+		desired = desired.Add(evade.Scale(1.5))
+	}
+
+	b.scratch = world.NeighborsInto(self.ID, sepRad, b.scratch[:0])
+	sep := SteerSeparation(self, b.scratch, sepRad, maxSpeed)
+	desired = desired.Add(sep.Scale(sepWeight)).ClampLen(maxSpeed)
+
+	ApplySteering(self, desired, maxForce, maxSpeed, dt)
 }

@@ -1483,3 +1483,154 @@ func TestDeclarativeFSMSpecTraceAndOptimize(t *testing.T) {
 		t.Fatal("expected RolloutResult.Traces to contain target Actor ExecutionTrace")
 	}
 }
+
+func TestReciprocalCollisionAvoidance(t *testing.T) {
+	w := NewWorld(Config{Seed: 1, Perception: NewGridIndex(3.0)})
+
+	makeCrossingBehavior := func(goal Vec3) Behavior {
+		return BehaviorFunc(func(dt float64, self *Actor, world *World) {
+			desired := SteerArrive(self.Position, goal, 5.0, 1.5)
+			neighbors := world.Neighbors(self.ID, 6.0)
+			avoid := SteerAvoidActors(self, neighbors, 2.0, 5.0)
+			if avoid.LenSq() > 0 {
+				desired = desired.Add(avoid.Scale(1.4)).ClampLen(5.0)
+			}
+			ApplySteering(self, desired, 20.0, 5.0, dt)
+		})
+	}
+
+	id1 := w.Spawn(Actor{
+		Tag:      "walker",
+		Position: Vec2(-6, 0),
+		Velocity: Vec2(5, 0),
+		Radius:   0.6,
+		Behavior: makeCrossingBehavior(Vec2(6, 0)),
+	})
+	id2 := w.Spawn(Actor{
+		Tag:      "walker",
+		Position: Vec2(6, 0),
+		Velocity: Vec2(-5, 0),
+		Radius:   0.6,
+		Behavior: makeCrossingBehavior(Vec2(-6, 0)),
+	})
+
+	a1 := w.ActorByID(id1)
+	a2 := w.ActorByID(id2)
+
+	minDist := math.MaxFloat64
+	for range 80 {
+		w.Tick(0.05, nil)
+		d := a1.Position.Dist(a2.Position)
+		if d < minDist {
+			minDist = d
+		}
+	}
+
+	if minDist < a1.Radius+a2.Radius {
+		t.Fatalf("expected head-on actors to avoid overlap (min clearance %.2f), got minDist=%.2f",
+			a1.Radius+a2.Radius, minDist)
+	}
+	if a1.Position.Dist(Vec2(6, 0)) > 1.5 || a2.Position.Dist(Vec2(-6, 0)) > 1.5 {
+		t.Fatalf("expected both actors to reach opposite corridor goals, got a1=%+v a2=%+v",
+			a1.Position, a2.Position)
+	}
+}
+
+func TestSquadFormationsAndFollowLeader(t *testing.T) {
+	for _, kind := range []FormationKind{FormationWedge, FormationLine, FormationColumn, FormationRing} {
+		offs := FormationOffsets(kind, 4, 2.0)
+		if len(offs) != 4 {
+			t.Fatalf("expected 4 offsets for %s, got %d", kind, len(offs))
+		}
+	}
+
+	w := NewWorld(Config{Seed: 12, Perception: NewGridIndex(3.0)})
+	leaderID := w.Spawn(Actor{
+		Tag:      "leader",
+		Position: Vec2(0, 0),
+		Velocity: Vec2(4, 0),
+		Behavior: BehaviorFunc(func(dt float64, self *Actor, _ *World) {
+			self.Velocity = Vec2(4, 0)
+			Integrate(self, dt)
+		}),
+	})
+
+	wedge := FormationOffsets(FormationWedge, 4, 2.0)
+	var followerIDs []ActorID
+	for i, off := range wedge {
+		fid := w.Spawn(Actor{
+			Tag:      "squad",
+			Position: Vec2(-5, float64(i-2)*1.5),
+			Behavior: &FollowLeaderBehavior{
+				LeaderID:         leaderID,
+				SlotOffset:       off,
+				MaxSpeed:         7.0,
+				MaxForce:         28.0,
+				SlowRadius:       2.0,
+				SeparationRadius: 1.5,
+			},
+		})
+		followerIDs = append(followerIDs, fid)
+	}
+
+	for range 60 {
+		w.Tick(0.05, nil)
+	}
+
+	leader := w.ActorByID(leaderID)
+	for i, fid := range followerIDs {
+		f := w.ActorByID(fid)
+		expectedSlot := FormationWorldPosition(leader.Position, leader.Velocity, wedge[i])
+		if d := f.Position.Dist(expectedSlot); d > 1.8 {
+			t.Fatalf("follower %d too far from formation slot %+v: pos=%+v dist=%.2f",
+				i, expectedSlot, f.Position, d)
+		}
+	}
+}
+
+func Test3DNavigationWaypointGraphAndVoxelGrid(t *testing.T) {
+	// 1. Multi-floor 3D WaypointGraph routing.
+	wg := NewWaypointGraph()
+	n0 := wg.AddNode(Vec3{X: 0, Y: 0, Z: 0})
+	n1 := wg.AddNode(Vec3{X: 5, Y: 0, Z: 0})
+	n2 := wg.AddNode(Vec3{X: 5, Y: 0, Z: 8}) // vertical elevator / ramp to Z=8
+	n3 := wg.AddNode(Vec3{X: 10, Y: 4, Z: 8})
+	wg.AddBiEdge(n0, n1, 1.0)
+	wg.AddBiEdge(n1, n2, 1.2)
+	wg.AddBiEdge(n2, n3, 1.0)
+
+	wPath, ok := wg.FindWorldPath(Vec3{X: 0.2, Y: 0, Z: 0}, Vec3{X: 10, Y: 4, Z: 8})
+	if !ok || len(wPath) < 4 {
+		t.Fatalf("expected 3D WaypointGraph path across floors, got ok=%v path=%+v", ok, wPath)
+	}
+
+	// 2. Volumetric 3D VoxelGrid routing across a ceiling slab with a vertical shaft opening.
+	vg := NewVoxelGrid(10, 8, 5, 1.0, Vec3{X: 0, Y: 0, Z: 0})
+	// Block entire Z=2 floor slab except shaft at (8, 6, 2).
+	vg.SetBoxWall(0, 0, 2, 9, 7, 2, true)
+	vg.SetWall(8, 6, 2, false)
+
+	start := vg.CellToWorld(1, 1, 0)
+	goal := vg.CellToWorld(2, 5, 4)
+
+	if vg.HasLineOfSight(start, goal) {
+		t.Fatal("expected Z=2 ceiling slab to block 3D line of sight between Z=0 and Z=4")
+	}
+
+	raw3D, ok := vg.FindWorldPath(start, goal, false)
+	if !ok || len(raw3D) < 5 {
+		t.Fatalf("expected valid 3D VoxelGrid path through shaft, got ok=%v len=%d", ok, len(raw3D))
+	}
+	for _, pt := range raw3D {
+		cx, cy, cz, inBounds := vg.WorldToCell(pt)
+		if !inBounds || vg.IsWall(cx, cy, cz) {
+			t.Fatalf("3D path waypoint %+v lies inside blocked voxel (%d,%d,%d)", pt, cx, cy, cz)
+		}
+	}
+
+	smooth3D, ok := vg.FindWorldPath(start, goal, true)
+	if !ok || len(smooth3D) >= len(raw3D) {
+		t.Fatalf("expected smoothed 3D path (%d) to have fewer waypoints than raw 3D path (%d)",
+			len(smooth3D), len(raw3D))
+	}
+}

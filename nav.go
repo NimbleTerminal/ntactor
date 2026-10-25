@@ -766,3 +766,465 @@ func (b *FlowFieldBehavior) Tick(dt float64, self *Actor, world *World) {
 
 	ApplySteering(self, desired, maxForce, maxSpeed, dt)
 }
+
+// WaypointEdge represents a directed weighted edge in a WaypointGraph.
+type WaypointEdge struct {
+	To             NodeID
+	CostMultiplier float64
+}
+
+// WaypointGraph is a 3D sparse navigation graph (suitable for multi-floor
+// waypoint networks, jump/elevator links, and navmesh polygon centroids) that
+// implements NavGraph.
+type WaypointGraph struct {
+	positions []Vec3
+	edges     [][]WaypointEdge
+}
+
+// NewWaypointGraph constructs an empty WaypointGraph.
+func NewWaypointGraph() *WaypointGraph {
+	return &WaypointGraph{}
+}
+
+// NodeCount returns the total number of nodes in the graph.
+func (g *WaypointGraph) NodeCount() int {
+	if g == nil {
+		return 0
+	}
+	return len(g.positions)
+}
+
+// AddNode appends a 3D waypoint position and returns its NodeID.
+func (g *WaypointGraph) AddNode(pos Vec3) NodeID {
+	id := NodeID(len(g.positions))
+	g.positions = append(g.positions, pos)
+	g.edges = append(g.edges, nil)
+	return id
+}
+
+// AddEdge adds or updates a directed edge from -> to with costMultiplier (>= 1.0, default 1.0).
+func (g *WaypointGraph) AddEdge(from, to NodeID, costMultiplier float64) {
+	if g == nil || from < 0 || int(from) >= len(g.positions) || to < 0 || int(to) >= len(g.positions) || from == to {
+		return
+	}
+	if costMultiplier <= 0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
+		costMultiplier = 1.0
+	}
+	adj := g.edges[int(from)]
+	for i := range adj {
+		if adj[i].To == to {
+			adj[i].CostMultiplier = costMultiplier
+			return
+		}
+	}
+	g.edges[int(from)] = append(adj, WaypointEdge{To: to, CostMultiplier: costMultiplier})
+}
+
+// AddBiEdge adds or updates an undirected (bi-directional) edge between a and b.
+func (g *WaypointGraph) AddBiEdge(a, b NodeID, costMultiplier float64) {
+	g.AddEdge(a, b, costMultiplier)
+	g.AddEdge(b, a, costMultiplier)
+}
+
+// ConnectWithinRadius automatically connects all pairs of nodes within maxDist
+// (and passing optional los check if non-nil) with bi-directional unit-cost edges
+// in deterministic NodeID order.
+func (g *WaypointGraph) ConnectWithinRadius(maxDist float64, los func(from, to Vec3) bool) {
+	if g == nil || maxDist <= 0 {
+		return
+	}
+	maxSq := maxDist * maxDist
+	n := len(g.positions)
+	for i := 0; i < n; i++ {
+		for j := i + 1; j < n; j++ {
+			pa, pb := g.positions[i], g.positions[j]
+			if pa.DistSq(pb) <= maxSq {
+				if los != nil && !los(pa, pb) {
+					continue
+				}
+				g.AddBiEdge(NodeID(i), NodeID(j), 1.0)
+			}
+		}
+	}
+}
+
+// NearestNode returns the NodeID of the waypoint closest to pos, or InvalidNodeID
+// if the graph is empty.
+func (g *WaypointGraph) NearestNode(pos Vec3) NodeID {
+	if g == nil || len(g.positions) == 0 {
+		return InvalidNodeID
+	}
+	bestID := NodeID(0)
+	bestSq := pos.DistSq(g.positions[0])
+	for i := 1; i < len(g.positions); i++ {
+		dSq := pos.DistSq(g.positions[i])
+		if dSq < bestSq {
+			bestSq = dSq
+			bestID = NodeID(i)
+		}
+	}
+	return bestID
+}
+
+// Position returns the 3D world-space coordinate of node.
+func (g *WaypointGraph) Position(node NodeID) Vec3 {
+	if g == nil || node < 0 || int(node) >= len(g.positions) {
+		return Vec3{}
+	}
+	return g.positions[int(node)]
+}
+
+// Neighbors appends outgoing neighbor NodeIDs from node to dst in registration order.
+func (g *WaypointGraph) Neighbors(node NodeID, dst []NodeID) []NodeID {
+	if g == nil || node < 0 || int(node) >= len(g.edges) {
+		return dst
+	}
+	for _, e := range g.edges[int(node)] {
+		dst = append(dst, e.To)
+	}
+	return dst
+}
+
+// Cost returns the Euclidean distance between a and b scaled by the edge's CostMultiplier.
+func (g *WaypointGraph) Cost(a, b NodeID) float64 {
+	if g == nil || a < 0 || int(a) >= len(g.edges) || b < 0 || int(b) >= len(g.positions) {
+		return math.Inf(1)
+	}
+	for _, e := range g.edges[int(a)] {
+		if e.To == b {
+			return g.positions[int(a)].Dist(g.positions[int(b)]) * e.CostMultiplier
+		}
+	}
+	return math.Inf(1)
+}
+
+// Heuristic returns the 3D Euclidean distance from node to goal.
+func (g *WaypointGraph) Heuristic(node, goal NodeID) float64 {
+	return g.Position(node).Dist(g.Position(goal))
+}
+
+// FindWorldPath plans a 3D path from from to to by snapping to the nearest
+// start and goal waypoints in g and running A*.
+func (g *WaypointGraph) FindWorldPath(from, to Vec3) ([]Vec3, bool) {
+	start := g.NearestNode(from)
+	goal := g.NearestNode(to)
+	if start == InvalidNodeID || goal == InvalidNodeID {
+		return nil, false
+	}
+	path, ok := FindPath(g, start, goal, DefaultMaxExpansions)
+	if !ok || len(path) == 0 {
+		return nil, false
+	}
+	if path[len(path)-1].DistSq(to) > 1e-6 {
+		path = append(path, to)
+	}
+	return path, true
+}
+
+// VoxelGrid is a 3D volumetric occupancy and weighted-cost grid that implements
+// NavGraph for 3D aerial, underwater, and multi-story routing.
+type VoxelGrid struct {
+	width         int
+	height        int
+	depth         int
+	cellSize      float64
+	invCell       float64
+	origin        Vec3
+	AllowDiagonal bool
+	blocked       []bool
+	costs         []float64
+}
+
+// NewVoxelGrid constructs a width x height x depth 3D VoxelGrid where voxel
+// (0,0,0) has its minimum corner at origin and each voxel is a cube of side cellSize.
+func NewVoxelGrid(width, height, depth int, cellSize float64, origin Vec3) *VoxelGrid {
+	if width <= 0 {
+		width = 1
+	}
+	if height <= 0 {
+		height = 1
+	}
+	if depth <= 0 {
+		depth = 1
+	}
+	if cellSize <= 0 || math.IsNaN(cellSize) || math.IsInf(cellSize, 0) {
+		cellSize = 1.0
+	}
+	n := width * height * depth
+	costs := make([]float64, n)
+	for i := range costs {
+		costs[i] = 1.0
+	}
+	return &VoxelGrid{
+		width:         width,
+		height:        height,
+		depth:         depth,
+		cellSize:      cellSize,
+		invCell:       1.0 / cellSize,
+		origin:        origin,
+		AllowDiagonal: true,
+		blocked:       make([]bool, n),
+		costs:         costs,
+	}
+}
+
+// Width returns the number of X columns.
+func (v *VoxelGrid) Width() int { return v.width }
+
+// Height returns the number of Y rows.
+func (v *VoxelGrid) Height() int { return v.height }
+
+// Depth returns the number of Z layers.
+func (v *VoxelGrid) Depth() int { return v.depth }
+
+// CellSize returns the world-space edge length of each voxel.
+func (v *VoxelGrid) CellSize() float64 { return v.cellSize }
+
+// Origin returns the minimum world-space corner (X, Y, Z) of the voxel grid.
+func (v *VoxelGrid) Origin() Vec3 { return v.origin }
+
+// InBounds reports whether voxel coordinates (cx, cy, cz) lie inside the grid.
+func (v *VoxelGrid) InBounds(cx, cy, cz int) bool {
+	return cx >= 0 && cx < v.width && cy >= 0 && cy < v.height && cz >= 0 && cz < v.depth
+}
+
+func (v *VoxelGrid) index(cx, cy, cz int) int {
+	return (cz*v.height+cy)*v.width + cx
+}
+
+// NodeID converts voxel coordinates (cx, cy, cz) into a NodeID, or returns
+// InvalidNodeID if out of bounds.
+func (v *VoxelGrid) NodeID(cx, cy, cz int) NodeID {
+	if !v.InBounds(cx, cy, cz) {
+		return InvalidNodeID
+	}
+	return NodeID(v.index(cx, cy, cz))
+}
+
+// Coords converts a NodeID back into voxel coordinates (cx, cy, cz).
+func (v *VoxelGrid) Coords(id NodeID) (cx, cy, cz int) {
+	if id < 0 || int(id) >= len(v.blocked) {
+		return -1, -1, -1
+	}
+	idx := int(id)
+	cx = idx % v.width
+	idx /= v.width
+	cy = idx % v.height
+	cz = idx / v.height
+	return cx, cy, cz
+}
+
+// SetWall marks voxel (cx, cy, cz) as blocked or passable.
+func (v *VoxelGrid) SetWall(cx, cy, cz int, blocked bool) {
+	if v.InBounds(cx, cy, cz) {
+		v.blocked[v.index(cx, cy, cz)] = blocked
+	}
+}
+
+// SetBoxWall marks all voxels in the inclusive box [x0..x1, y0..y1, z0..z1] as
+// blocked or passable.
+func (v *VoxelGrid) SetBoxWall(x0, y0, z0, x1, y1, z1 int, blocked bool) {
+	if x0 > x1 {
+		x0, x1 = x1, x0
+	}
+	if y0 > y1 {
+		y0, y1 = y1, y0
+	}
+	if z0 > z1 {
+		z0, z1 = z1, z0
+	}
+	for z := z0; z <= z1; z++ {
+		for y := y0; y <= y1; y++ {
+			for x := x0; x <= x1; x++ {
+				v.SetWall(x, y, z, blocked)
+			}
+		}
+	}
+}
+
+// IsWall reports whether voxel (cx, cy, cz) is out of bounds or blocked.
+func (v *VoxelGrid) IsWall(cx, cy, cz int) bool {
+	if !v.InBounds(cx, cy, cz) {
+		return true
+	}
+	return v.blocked[v.index(cx, cy, cz)]
+}
+
+// SetCost sets the traversal cost multiplier (>= 1.0) for voxel (cx, cy, cz).
+func (v *VoxelGrid) SetCost(cx, cy, cz int, costMultiplier float64) {
+	if !v.InBounds(cx, cy, cz) {
+		return
+	}
+	if costMultiplier < 1.0 || math.IsNaN(costMultiplier) || math.IsInf(costMultiplier, 0) {
+		costMultiplier = 1.0
+	}
+	v.costs[v.index(cx, cy, cz)] = costMultiplier
+}
+
+// WorldToCell maps a 3D world-space Vec3 to voxel coordinates (cx, cy, cz).
+func (v *VoxelGrid) WorldToCell(pos Vec3) (cx, cy, cz int, ok bool) {
+	cx = int(math.Floor((pos.X - v.origin.X) * v.invCell))
+	cy = int(math.Floor((pos.Y - v.origin.Y) * v.invCell))
+	cz = int(math.Floor((pos.Z - v.origin.Z) * v.invCell))
+	return cx, cy, cz, v.InBounds(cx, cy, cz)
+}
+
+// CellToWorld returns the 3D world-space center of voxel (cx, cy, cz).
+func (v *VoxelGrid) CellToWorld(cx, cy, cz int) Vec3 {
+	return Vec3{
+		X: v.origin.X + (float64(cx)+0.5)*v.cellSize,
+		Y: v.origin.Y + (float64(cy)+0.5)*v.cellSize,
+		Z: v.origin.Z + (float64(cz)+0.5)*v.cellSize,
+	}
+}
+
+// Position returns the 3D world-space center of node.
+func (v *VoxelGrid) Position(node NodeID) Vec3 {
+	cx, cy, cz := v.Coords(node)
+	return v.CellToWorld(cx, cy, cz)
+}
+
+// Neighbors appends passable adjacent 3D voxel NodeIDs to dst in deterministic order.
+// When AllowDiagonal is true, 2D/3D diagonal steps are permitted only when all
+// axis-aligned intermediate voxels are also passable (preventing corner clipping).
+func (v *VoxelGrid) Neighbors(node NodeID, dst []NodeID) []NodeID {
+	cx, cy, cz := v.Coords(node)
+	if !v.InBounds(cx, cy, cz) || v.IsWall(cx, cy, cz) {
+		return dst
+	}
+
+	// 6 cardinal directions: -X, +X, -Y, +Y, -Z, +Z
+	cardinal := [6][3]int{{-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}}
+	for _, d := range cardinal {
+		nx, ny, nz := cx+d[0], cy+d[1], cz+d[2]
+		if !v.IsWall(nx, ny, nz) {
+			dst = append(dst, v.NodeID(nx, ny, nz))
+		}
+	}
+
+	if v.AllowDiagonal {
+		for dz := -1; dz <= 1; dz++ {
+			for dy := -1; dy <= 1; dy++ {
+				for dx := -1; dx <= 1; dx++ {
+					nonZero := 0
+					if dx != 0 {
+						nonZero++
+					}
+					if dy != 0 {
+						nonZero++
+					}
+					if dz != 0 {
+						nonZero++
+					}
+					if nonZero <= 1 {
+						continue
+					}
+					nx, ny, nz := cx+dx, cy+dy, cz+dz
+					if v.IsWall(nx, ny, nz) {
+						continue
+					}
+					// Require orthogonal component steps to be passable to prevent corner clipping.
+					if dx != 0 && v.IsWall(cx+dx, cy, cz) {
+						continue
+					}
+					if dy != 0 && v.IsWall(cx, cy+dy, cz) {
+						continue
+					}
+					if dz != 0 && v.IsWall(cx, cy, cz+dz) {
+						continue
+					}
+					dst = append(dst, v.NodeID(nx, ny, nz))
+				}
+			}
+		}
+	}
+	return dst
+}
+
+// Cost returns the 3D Euclidean world-space step distance weighted by the average
+// cost multiplier of voxels a and b.
+func (v *VoxelGrid) Cost(a, b NodeID) float64 {
+	ax, ay, az := v.Coords(a)
+	bx, by, bz := v.Coords(b)
+	if v.IsWall(ax, ay, az) || v.IsWall(bx, by, bz) {
+		return math.Inf(1)
+	}
+	dist := v.CellToWorld(ax, ay, az).Dist(v.CellToWorld(bx, by, bz))
+	weight := 0.5 * (v.costs[int(a)] + v.costs[int(b)])
+	return dist * weight
+}
+
+// Heuristic returns the 3D Euclidean distance between node and goal.
+func (v *VoxelGrid) Heuristic(node, goal NodeID) float64 {
+	return v.Position(node).Dist(v.Position(goal))
+}
+
+// HasLineOfSight performs a 3D ray march across the VoxelGrid between from and
+// to, returning false if any touched voxel is blocked or out of bounds.
+func (v *VoxelGrid) HasLineOfSight(from, to Vec3) bool {
+	x0, y0, z0, ok0 := v.WorldToCell(from)
+	x1, y1, z1, ok1 := v.WorldToCell(to)
+	if !ok0 || !ok1 || v.IsWall(x0, y0, z0) || v.IsWall(x1, y1, z1) {
+		return false
+	}
+	if x0 == x1 && y0 == y1 && z0 == z1 {
+		return true
+	}
+
+	diff := to.Sub(from)
+	dist := diff.Len()
+	steps := int(math.Ceil(dist/(v.cellSize*0.25))) + 1
+	for i := 0; i <= steps; i++ {
+		t := float64(i) / float64(steps)
+		p := from.Add(diff.Scale(t))
+		cx, cy, cz, ok := v.WorldToCell(p)
+		if !ok || v.IsWall(cx, cy, cz) {
+			return false
+		}
+	}
+	return true
+}
+
+// SmoothPath simplifies a 3D waypoint path using line-of-sight string-pulling.
+func (v *VoxelGrid) SmoothPath(path []Vec3) []Vec3 {
+	if len(path) <= 2 {
+		return path
+	}
+	out := make([]Vec3, 0, len(path))
+	anchor := 0
+	out = append(out, path[anchor])
+
+	for anchor < len(path)-1 {
+		furthest := anchor + 1
+		for probe := len(path) - 1; probe > anchor+1; probe-- {
+			if v.HasLineOfSight(path[anchor], path[probe]) {
+				furthest = probe
+				break
+			}
+		}
+		out = append(out, path[furthest])
+		anchor = furthest
+	}
+	return out
+}
+
+// FindWorldPath plans a 3D path between two world-space positions on the VoxelGrid.
+func (v *VoxelGrid) FindWorldPath(from, to Vec3, smooth bool) ([]Vec3, bool) {
+	sx, sy, sz, okS := v.WorldToCell(from)
+	gx, gy, gz, okG := v.WorldToCell(to)
+	if !okS || !okG {
+		return nil, false
+	}
+	if v.IsWall(sx, sy, sz) || v.IsWall(gx, gy, gz) {
+		return nil, false
+	}
+	path, ok := FindPath(v, v.NodeID(sx, sy, sz), v.NodeID(gx, gy, gz), DefaultMaxExpansions)
+	if !ok || len(path) == 0 {
+		return nil, false
+	}
+	path[len(path)-1] = to
+	if smooth && len(path) > 2 {
+		path = v.SmoothPath(path)
+	}
+	return path, true
+}

@@ -1097,6 +1097,34 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 	})
 
 	r.RegisterAction(PrimitiveDef{
+		Name:        "follow_leader",
+		Description: "Follows a leader Actor in a rotated formation slot (offset_x forward, offset_y lateral).",
+		Params: []ParamSpec{
+			{Name: "leader_tag", Type: "string", Required: true, Description: "Tag of the leader Actor"},
+			{Name: "offset_x", Type: "float", Default: -2.5, Min: FloatBound(-200), Max: FloatBound(200), Description: "Forward slot offset relative to leader heading"},
+			{Name: "offset_y", Type: "float", Default: 1.5, Min: FloatBound(-200), Max: FloatBound(200), Description: "Lateral slot offset relative to leader heading"},
+			{Name: "speed", Type: "float", Default: 8.5, Min: FloatBound(0.1), Max: FloatBound(500), Description: "Max follower speed"},
+			{Name: "max_force", Type: "float", Default: 28.0, Min: FloatBound(0.1), Max: FloatBound(2000), Description: "Max steering force"},
+			{Name: "slow_radius", Type: "float", Default: 2.5, Min: FloatBound(0.05), Max: FloatBound(200), Description: "Arrival deceleration radius"},
+			{Name: "separation_radius", Type: "float", Default: 2.0, Min: FloatBound(0.05), Max: FloatBound(200), Description: "Squadmate separation radius"},
+		},
+	}, func(p Params) (BTNode, error) {
+		fl := &FollowLeaderBehavior{
+			LeaderTag:        p.String("leader_tag", ""),
+			SlotOffset:       Vec2(p.Float("offset_x", -2.5), p.Float("offset_y", 1.5)),
+			MaxSpeed:         p.Float("speed", 8.5),
+			MaxForce:         p.Float("max_force", 28.0),
+			SlowRadius:       p.Float("slow_radius", 2.5),
+			SeparationRadius: p.Float("separation_radius", 2.0),
+		}
+		return Action(func(dt float64, self *Actor, world *World) NodeStatus {
+			fl.Tick(dt, self, world)
+			self.Blackboard().SetString("status", "formation")
+			return StatusRunning
+		}), nil
+	})
+
+	r.RegisterAction(PrimitiveDef{
 		Name:        "set_blackboard",
 		Description: "Sets a numeric or string value on the Actor or World Blackboard and returns StatusSuccess.",
 		Params: []ParamSpec{
