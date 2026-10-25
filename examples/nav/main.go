@@ -36,6 +36,7 @@ type courierState struct {
 type navSim struct {
 	seed       uint64
 	gridMap    *ntactor.GridMap
+	threatMap  *ntactor.InfluenceMap
 	flowField  *ntactor.FlowField
 	world      *ntactor.World
 	goalCellX  int
@@ -68,9 +69,9 @@ func buildMazeGrid() *ntactor.GridMap {
 
 func newNavSim(seed uint64) *navSim {
 	gm := buildMazeGrid()
+	im := ntactor.NewInfluenceMapFromGrid(gm)
 	ff := ntactor.NewFlowField(gm)
 	goalX, goalY := 46, 3
-	ff.Compute(goalX, goalY)
 
 	w := ntactor.NewWorld(ntactor.Config{
 		Seed:        seed,
@@ -81,12 +82,15 @@ func newNavSim(seed uint64) *navSim {
 	sim := &navSim{
 		seed:       seed,
 		gridMap:    gm,
+		threatMap:  im,
 		flowField:  ff,
 		world:      w,
 		goalCellX:  goalX,
 		goalCellY:  goalY,
 		smoothPath: true,
 	}
+	sim.syncCosts()
+	ff.Compute(goalX, goalY)
 
 	w.OnEvent("set_goal", func(_ *ntactor.World, ev ntactor.Event) {
 		gx, gy := int(ev.Vector.X), int(ev.Vector.Y)
@@ -104,6 +108,14 @@ func newNavSim(seed uint64) *navSim {
 				return
 			}
 			gm.SetWall(wx, wy, !gm.IsWall(wx, wy))
+			sim.replanAll()
+		}
+	})
+
+	w.OnEvent("stamp_threat", func(_ *ntactor.World, ev ntactor.Event) {
+		tx, ty := int(ev.Vector.X), int(ev.Vector.Y)
+		if gm.InBounds(tx, ty) && !gm.IsWall(tx, ty) {
+			im.StampRadiusWithLOS(gm.CellToWorld(tx, ty), 4.0, 10.0, gm)
 			sim.replanAll()
 		}
 	})
@@ -134,6 +146,7 @@ func newNavSim(seed uint64) *navSim {
 	// Spawn two A* Courier Actors that plan paths to the goal, and when they
 	// reach the goal, pick a new start corner and plan again.
 	starts := [][2]int{{3, 2}, {3, 13}}
+	var leaderID ntactor.ActorID
 	for i, sc := range starts {
 		startPos := gm.CellToWorld(sc[0], sc[1])
 		goalPos := gm.CellToWorld(goalX, goalY)
@@ -149,7 +162,7 @@ func newNavSim(seed uint64) *navSim {
 			Smooth: sim.smoothPath,
 			Follow: follow,
 		}
-		w.Spawn(ntactor.Actor{
+		id := w.Spawn(ntactor.Actor{
 			Tag:      "courier",
 			Position: startPos,
 			Behavior: ntactor.BehaviorFunc(func(dt float64, self *ntactor.Actor, world *ntactor.World) {
@@ -168,6 +181,26 @@ func newNavSim(seed uint64) *navSim {
 				}
 			}),
 			State: st,
+		})
+		if i == 0 {
+			leaderID = id
+		}
+	}
+
+	// Spawn 2 Wedge formation escort Actors following Courier-1.
+	wedgeSlots := ntactor.FormationOffsets(ntactor.FormationWedge, 2, 1.3)
+	for i, slot := range wedgeSlots {
+		w.Spawn(ntactor.Actor{
+			Tag:      "escort",
+			Position: gm.CellToWorld(2, 2+i),
+			Behavior: &ntactor.FollowLeaderBehavior{
+				LeaderID:         leaderID,
+				SlotOffset:       slot,
+				MaxSpeed:         7.5,
+				MaxForce:         32.0,
+				SlowRadius:       1.5,
+				SeparationRadius: 1.1,
+			},
 		})
 	}
 
@@ -191,7 +224,18 @@ func newNavSim(seed uint64) *navSim {
 	return sim
 }
 
+func (s *navSim) syncCosts() {
+	s.threatMap.ApplyCostToGridMap(s.gridMap, 1.0, 2.5)
+	for y := 2; y <= 4; y++ {
+		for x := 19; x <= 25; x++ {
+			cost := 3.5 + 2.5*s.threatMap.At(x, y)
+			s.gridMap.SetCost(x, y, cost)
+		}
+	}
+}
+
 func (s *navSim) replanAll() {
+	s.syncCosts()
 	s.flowField.Compute(s.goalCellX, s.goalCellY)
 	goalPos := s.gridMap.CellToWorld(s.goalCellX, s.goalCellY)
 	for _, a := range s.world.FindByTag("courier") {
@@ -216,6 +260,7 @@ func flowArrow(dir ntactor.Vec3) string {
 func syncNavCanvas(grid *ntcanvas.GraphemeGrid, sim *navSim, cursorX, cursorY int, showFlow bool, mode string) {
 	grid.Clear()
 	gm := sim.gridMap
+	im := sim.threatMap
 	dimStyle := ntcanvas.CellStyle{Attributes: ntcanvas.Dim}
 	boldStyle := ntcanvas.CellStyle{Attributes: ntcanvas.Bold}
 
@@ -223,6 +268,15 @@ func syncNavCanvas(grid *ntcanvas.GraphemeGrid, sim *navSim, cursorX, cursorY in
 		for x := 0; x < mapWidth; x++ {
 			if gm.IsWall(x, y) {
 				grid.SetTextWithStyle(ntcanvas.Point{X: x, Y: y}, "█", dimStyle)
+				continue
+			}
+			threat := im.At(x, y)
+			if threat >= 2.0 {
+				grid.SetTextWithStyle(ntcanvas.Point{X: x, Y: y}, "▓", dimStyle)
+				continue
+			}
+			if threat >= 0.4 {
+				grid.SetTextWithStyle(ntcanvas.Point{X: x, Y: y}, "▒", dimStyle)
 				continue
 			}
 			if gm.CellCost(x, y) > 1.5 {
@@ -253,15 +307,18 @@ func syncNavCanvas(grid *ntcanvas.GraphemeGrid, sim *navSim, cursorX, cursorY in
 	// Draw Goal.
 	grid.SetTextWithStyle(ntcanvas.Point{X: sim.goalCellX, Y: sim.goalCellY}, "✦", boldStyle)
 
-	// Draw Crowd and Courier Actors.
+	// Draw Crowd, Escort, and Courier Actors.
 	for _, a := range sim.world.Actors() {
 		cx, cy, ok := gm.WorldToCell(a.Position)
 		if !ok {
 			continue
 		}
-		if a.Tag == "crowd" {
+		switch a.Tag {
+		case "crowd":
 			grid.SetText(ntcanvas.Point{X: cx, Y: cy}, "•")
-		} else if a.Tag == "courier" {
+		case "escort":
+			grid.SetText(ntcanvas.Point{X: cx, Y: cy}, "v")
+		case "courier":
 			grid.SetTextWithStyle(ntcanvas.Point{X: cx, Y: cy}, "A", boldStyle)
 		}
 	}
@@ -326,16 +383,25 @@ func newNavModel(seed uint64) navModel {
 }
 
 func (m *navModel) stepOnce() {
+	var dt float64
 	if m.replaying && m.histDriver != nil {
 		if m.histDriver.Done() {
 			m.replaying = false
 		} else {
-			dt, evs := m.histDriver.Step()
+			var evs []ntactor.Event
+			dt, evs = m.histDriver.Step()
 			m.sim.world.Tick(dt, evs)
 		}
 	} else {
-		dt, evs := m.liveDriver.Step()
+		var evs []ntactor.Event
+		dt, evs = m.liveDriver.Step()
 		m.sim.world.Tick(dt, evs)
+	}
+	if dt > 0 {
+		m.sim.threatMap.StepWithWalls(dt, 0.08, 0.25, m.sim.gridMap)
+		if m.sim.world.TickCount()%5 == 0 {
+			m.sim.replanAll()
+		}
 	}
 	mode := "LIVE"
 	if m.replaying && m.histDriver != nil {
@@ -353,6 +419,7 @@ func (m navModel) Init() tea.Cmd {
 func (m navModel) Help() []key.Binding {
 	return []key.Binding{
 		demohelp.Key("Toggle wall", "w"),
+		demohelp.Key("Stamp threat", "t"),
 		demohelp.Key("Move goal", "g"),
 		demohelp.Key("Smooth path", "s"),
 		demohelp.Key("Spawn crowd", "c"),
@@ -415,6 +482,14 @@ func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				})
 				m.stepOnce()
 			}
+		case "t":
+			if !m.replaying {
+				m.liveDriver.PushEvent(ntactor.Event{
+					Kind:   "stamp_threat",
+					Vector: ntactor.Vec2(float64(m.cursorX), float64(m.cursorY)),
+				})
+				m.stepOnce()
+			}
 		case "g":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{
@@ -451,11 +526,11 @@ func (m navModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m navModel) renderView() string {
 	var sb strings.Builder
-	sb.WriteString("ntactor Navigation — Deterministic A* Pathfinding (with LOS Smoothing) & Dijkstra FlowField Crowd\n")
-	fmt.Fprintf(&sb, "Legend: A=A* Courier (·=waypoints) •=FlowField Crowd ✦=Goal █=Wall ░=High-Cost Mud(3.5x) ┼=Cursor(%d,%d)\n\n",
+	sb.WriteString("ntactor Navigation — A* Pathfinding, InfluenceMap Threat Routing, Wedge Formations & FlowField Crowd\n")
+	fmt.Fprintf(&sb, "Legend: A=A* Courier v=Wedge Escort (·=waypoints) •=FlowField Crowd ✦=Goal █=Wall ▓/▒=Threat ░=Mud ┼=Cursor(%d,%d)\n\n",
 		m.cursorX, m.cursorY)
 	sb.WriteString(m.canvas.View())
-	sb.WriteString("\n\nCONTROLS: [arrows/hjkl] cursor • [w] toggle wall • [g] move goal to cursor • [s] toggle path smoothing • [c] spawn crowd • [f] flow arrows • [r] replay • [q] quit")
+	sb.WriteString("\n\nCONTROLS: [arrows/hjkl] cursor • [w] toggle wall • [t] stamp threat • [g] move goal • [s] toggle smooth • [c] spawn crowd • [f] flow arrows • [r] replay • [q] quit")
 	return sb.String()
 }
 

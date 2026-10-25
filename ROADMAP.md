@@ -5,6 +5,13 @@ is already implemented.
 
 ## Done
 
+- [x] **Spatial Influence & Pheromone Maps (`influence.go`, `spec.go`)**:
+  deterministic 2D `InfluenceMap` (`NewInfluenceMap`, `NewInfluenceMapFromGrid`,
+  `StampRadius`, `StampRadiusWithLOS`, `Step`, `StepWithWalls`, `GradientWorld`,
+  `SteerInfluence`, `ApplyCostToGridMap`), coupling threat/pheromone fields
+  directly into `GridMap` A\* and `FlowField` pathfinding costs and declarative
+  `BehaviorSpec` primitives (`"stamp_influence"`, `"steer_influence"`,
+  `"influence_compare"`, `"influence_at_self"`).
 - [x] **Goal-Oriented Action Planning (`goap.go`, `spec.go`, `examples/planner`)**:
   STRIPS / F.E.A.R.-style `GOAPFact`, `GOAPAction`, `GOAPGoal`, deterministic A\*
   state-space planner (`PlanGOAP`), `GOAPNode`, declarative `"goap"`

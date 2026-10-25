@@ -784,11 +784,12 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 }
 
 // StandardRegistryConfig configures optional world/map helpers used by
-// NewStandardRegistry's built-in navigation and obstacle avoidance actions.
+// NewStandardRegistry's built-in navigation, influence, and obstacle avoidance actions.
 type StandardRegistryConfig struct {
-	GridMap   *GridMap
-	FlowField *FlowField
-	Obstacles []CircleObstacle
+	GridMap      *GridMap
+	FlowField    *FlowField
+	InfluenceMap *InfluenceMap
+	Obstacles    []CircleObstacle
 }
 
 // NewStandardRegistry constructs a BehaviorRegistry populated with ntactor's
@@ -919,6 +920,43 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		prob := p.Float("probability", 0.5)
 		return func(self *Actor, world *World) bool {
 			return world.ActorRNG(self.ID).Float64() < prob
+		}, nil
+	})
+
+	r.RegisterCondition(PrimitiveDef{
+		Name:        "influence_compare",
+		Description: "Compares the InfluenceMap value at self.Position against value using op (eq, ne, lt, le, gt, ge).",
+		Params: []ParamSpec{
+			{Name: "op", Type: "string", Default: "ge", Description: "Comparison operator: eq, ne, lt, le, gt, ge"},
+			{Name: "value", Type: "float", Required: true, Description: "Right-hand comparison threshold"},
+		},
+	}, func(p Params) (func(self *Actor, world *World) bool, error) {
+		op := p.String("op", "ge")
+		rhs := p.Float("value", 0)
+		switch op {
+		case "eq", "ne", "lt", "le", "gt", "ge":
+		default:
+			return nil, fmt.Errorf("unsupported op %q (use eq, ne, lt, le, gt, ge)", op)
+		}
+		return func(self *Actor, _ *World) bool {
+			var lhs float64
+			if cfg.InfluenceMap != nil {
+				lhs = cfg.InfluenceMap.SampleWorld(self.Position)
+			}
+			switch op {
+			case "eq":
+				return math.Abs(lhs-rhs) <= 1e-9
+			case "ne":
+				return math.Abs(lhs-rhs) > 1e-9
+			case "lt":
+				return lhs < rhs
+			case "le":
+				return lhs <= rhs
+			case "gt":
+				return lhs > rhs
+			default:
+				return lhs >= rhs
+			}
 		}, nil
 	})
 
@@ -1278,6 +1316,58 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		}), nil
 	})
 
+	r.RegisterAction(PrimitiveDef{
+		Name:        "stamp_influence",
+		Description: "Deposits influence/pheromone onto StandardRegistryConfig.InfluenceMap at self.Position and returns StatusSuccess.",
+		Params: []ParamSpec{
+			{Name: "amount", Type: "float", Default: 5.0, Min: FloatBound(-10000), Max: FloatBound(10000), Description: "Peak influence delta to deposit"},
+			{Name: "radius", Type: "float", Default: 2.5, Min: FloatBound(0), Max: FloatBound(500), Description: "Radial falloff radius (0 for single cell)"},
+		},
+	}, func(p Params) (BTNode, error) {
+		amount := p.Float("amount", 5.0)
+		radius := p.Float("radius", 2.5)
+		return Action(func(_ float64, self *Actor, _ *World) NodeStatus {
+			if cfg.InfluenceMap == nil {
+				return StatusFailure
+			}
+			cfg.InfluenceMap.StampRadiusWithLOS(self.Position, radius, amount, cfg.GridMap)
+			return StatusSuccess
+		}), nil
+	})
+
+	r.RegisterAction(PrimitiveDef{
+		Name:        "steer_influence",
+		Description: "Steers along the InfluenceMap gradient (toward high values when seek_high is true, or away when false).",
+		Params: []ParamSpec{
+			{Name: "speed", Type: "float", Default: 8.0, Min: FloatBound(0.1), Max: FloatBound(500), Description: "Steering speed"},
+			{Name: "max_force", Type: "float", Default: 24.0, Min: FloatBound(0.1), Max: FloatBound(2000), Description: "Max steering force"},
+			{Name: "seek_high", Type: "bool", Default: true, Description: "True to climb influence/pheromone gradient, false to flee high threat"},
+		},
+	}, func(p Params) (BTNode, error) {
+		speed := p.Float("speed", 8.0)
+		maxForce := p.Float("max_force", 24.0)
+		seekHigh := p.Bool("seek_high", true)
+		return Action(func(dt float64, self *Actor, _ *World) NodeStatus {
+			if cfg.InfluenceMap == nil {
+				return StatusFailure
+			}
+			desired := SteerInfluence(self, cfg.InfluenceMap, speed, seekHigh)
+			if desired.LenSq() == 0 {
+				return StatusFailure
+			}
+			if len(cfg.Obstacles) > 0 {
+				desired = desired.Add(SteerAvoidCircles(self, cfg.Obstacles, 2.5, speed)).ClampLen(speed)
+			}
+			ApplySteering(self, desired, maxForce, speed, dt)
+			if seekHigh {
+				self.Blackboard().SetString("status", "seek-influence")
+			} else {
+				self.Blackboard().SetString("status", "flee-influence")
+			}
+			return StatusRunning
+		}), nil
+	})
+
 	// --- Built-in Consideration Inputs ---
 	r.RegisterConsideration(PrimitiveDef{
 		Name:        "nearest_tag_distance",
@@ -1337,6 +1427,18 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 	}, func(_ Params) (func(self *Actor, world *World) float64, error) {
 		return func(self *Actor, _ *World) float64 {
 			return self.Position.Len()
+		}, nil
+	})
+
+	r.RegisterConsideration(PrimitiveDef{
+		Name:        "influence_at_self",
+		Description: "Returns the InfluenceMap value at self.Position (or 0 if unconfigured).",
+	}, func(_ Params) (func(self *Actor, world *World) float64, error) {
+		return func(self *Actor, _ *World) float64 {
+			if cfg.InfluenceMap == nil {
+				return 0
+			}
+			return cfg.InfluenceMap.SampleWorld(self.Position)
 		}, nil
 	})
 

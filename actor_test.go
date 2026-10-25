@@ -1810,3 +1810,108 @@ func TestGOAPMultiStepPlanningReplanningAndSpec(t *testing.T) {
 			unit.Blackboard().FloatOr("captures", 0), unit.Blackboard().FloatOr("beacons", 0))
 	}
 }
+
+func TestInfluenceMapDecayDiffusionSteeringAndCostRouting(t *testing.T) {
+	grid := NewGridMap(11, 11, 1.0, Vec3{})
+	im := NewInfluenceMapFromGrid(grid)
+
+	// 1. StampRadiusWithLOS and wall occlusion:
+	// Place a wall at (5, 3) between (5, 2) and (5, 4).
+	grid.SetWall(5, 3, true)
+	im.StampRadiusWithLOS(im.CellToWorld(5, 2), 3.0, 10.0, grid)
+	if im.At(5, 2) <= 9.9 {
+		t.Fatalf("expected peak influence at (5,2), got %v", im.At(5, 2))
+	}
+	if im.At(5, 4) != 0 {
+		t.Fatalf("expected wall at (5,3) to block LOS stamp at (5,4), got %v", im.At(5, 4))
+	}
+
+	// 2. StepWithWalls diffusion + decay:
+	// Influence at (5,2) should diffuse to (4,2) and (6,2), but not into wall (5,3) or across it in 1 step.
+	beforeCenter := im.At(5, 2)
+	im.StepWithWalls(0.2, 0.5, 2.0, grid)
+	if im.At(5, 2) >= beforeCenter {
+		t.Fatalf("expected decay+diffusion to reduce center peak from %v, got %v", beforeCenter, im.At(5, 2))
+	}
+	if im.At(5, 3) != 0 {
+		t.Fatalf("expected wall cell (5,3) to remain 0 after diffusion, got %v", im.At(5, 3))
+	}
+	if im.At(4, 2) <= 0 || im.At(6, 2) <= 0 {
+		t.Fatalf("expected neighbors (4,2) and (6,2) to have positive influence, got %v, %v", im.At(4, 2), im.At(6, 2))
+	}
+
+	// 3. GradientWorld & SteerInfluence (seeking pheromones and fleeing threats):
+	im.Clear()
+	grid.SetWall(5, 3, false)
+	im.StampRadius(im.CellToWorld(5, 5), 4.0, 20.0)
+
+	seeker := &Actor{ID: 1, Position: im.CellToWorld(2, 5)}
+	vSeek := SteerInfluence(seeker, im, 6.0, true)
+	if vSeek.X <= 0 {
+		t.Fatalf("expected pheromone seeker at (2,5) to steer in +X toward peak at (5,5), got %+v", vSeek)
+	}
+	fleer := &Actor{ID: 2, Position: im.CellToWorld(4, 5)}
+	vFlee := SteerInfluence(fleer, im, 6.0, false)
+	if vFlee.X >= 0 {
+		t.Fatalf("expected threat fleer at (4,5) to steer in -X away from peak at (5,5), got %+v", vFlee)
+	}
+
+	// 4. ApplyCostToGridMap coupled with GridMap A* (FindWorldPath):
+	start := grid.CellToWorld(1, 5)
+	goal := grid.CellToWorld(9, 5)
+
+	// Without influence cost, the path goes straight along y = 5.5 through (5, 5).
+	directPath, ok := grid.FindWorldPath(start, goal, false)
+	if !ok {
+		t.Fatalf("expected direct path to succeed")
+	}
+	passedCenterBefore := false
+	for _, wp := range directPath {
+		cx, cy, _ := grid.WorldToCell(wp)
+		if cx == 5 && cy == 5 {
+			passedCenterBefore = true
+		}
+	}
+	if !passedCenterBefore {
+		t.Fatalf("expected unweighted path to pass through center (5,5)")
+	}
+
+	// Apply threat influence as traversal cost penalty: A* should detour around (5, 5)!
+	im.ApplyCostToGridMap(grid, 1.0, 10.0)
+	detourPath, ok := grid.FindWorldPath(start, goal, false)
+	if !ok {
+		t.Fatalf("expected detour path to succeed")
+	}
+	for _, wp := range detourPath {
+		cx, cy, _ := grid.WorldToCell(wp)
+		if cx == 5 && cy == 5 {
+			t.Fatalf("expected threat-weighted A* path to detour around high-threat center (5,5), got path %v", detourPath)
+		}
+	}
+
+	// 5. Declarative BehaviorSpec integration ("stamp_influence", "influence_compare", "steer_influence", "influence_at_self"):
+	im.Clear()
+	reg := NewStandardRegistry(StandardRegistryConfig{GridMap: grid, InfluenceMap: im})
+	specJSON := []byte(`{
+		"type": "sequence",
+		"children": [
+			{"type": "action", "name": "stamp_influence", "params": {"amount": 12.0, "radius": 3.0}},
+			{"type": "condition", "name": "influence_compare", "params": {"op": "ge", "value": 10.0}},
+			{"type": "action", "name": "steer_influence", "params": {"speed": 6.0, "max_force": 20.0, "seek_high": false}}
+		]
+	}`)
+	bt, err := reg.CompileJSON(specJSON)
+	if err != nil {
+		t.Fatalf("CompileJSON failed: %v", err)
+	}
+	w := NewWorld(Config{Seed: 7})
+	aid := w.Spawn(Actor{Tag: "scout", Position: im.CellToWorld(5, 5), Behavior: bt})
+	w.Tick(0.1, nil)
+	scout := w.ActorByID(aid)
+	if im.SampleWorld(im.CellToWorld(5, 5)) < 10.0 {
+		t.Fatalf("expected stamp_influence to deposit >= 10 at (5,5), got %v", im.SampleWorld(im.CellToWorld(5, 5)))
+	}
+	if scout.Velocity.LenSq() == 0 {
+		t.Fatalf("expected steer_influence (seek_high=false) to accelerate scout away from stamped threat")
+	}
+}

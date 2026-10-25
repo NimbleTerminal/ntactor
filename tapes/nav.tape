@@ -11,13 +11,13 @@ Sleep 400ms
 Show
 Sleep 1.2s
 
-# Move cursor, relocate goal, toggle flow arrows, and spawn another crowd wave.
+# Stamp a threat zone at the cursor, move cursor, relocate goal, and spawn another crowd wave.
+Type "t"
+Sleep 800ms
 Right@120ms 4
 Down@120ms 2
 Type "g"
 Sleep 1.2s
-Type "f"
-Sleep 1s
 Type "c"
 Sleep 1.4s
 Screenshot docs/images/nav.png

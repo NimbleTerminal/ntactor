@@ -93,9 +93,9 @@ Building requires Go 1.26.8 or newer. See [`examples/README.md`](./examples/READ
 
 - **`task run-arena`** ([`examples/arena`](./examples/arena/main.go)) — interactive multi-actor tactical arena with `FSM` perimeter guards (`SteerPursue` lead prediction), `BehaviorTree` resource scouts, Reynolds Boids wisps (`FlockBehavior`), live event injection (`b`: beacon, `i`: intruder, `f`: flock wisps), and instant `HistoricalDriver` replay from seed (`r`).
 - **`task run-flock`** ([`examples/flock`](./examples/flock/main.go)) — Reynolds Boids murmuration (`FlockBehavior` + `GridIndex`) with dynamic attractors (`a`) and predators (`p`), adapted simultaneously to a contiguous 3D `PointCloudAdapter` slice and a terminal density grid.
-- **`task run-nav`** ([`examples/nav`](./examples/nav/main.go)) — interactive A\* pathfinding (`FindWorldPath`), supercover line-of-sight path smoothing (`SmoothPath`), weighted mud terrain (`░`), interactive wall toggling (`w`) and goal relocation (`g`), and Dijkstra `FlowField` crowd steering (`c`).
+- **`task run-nav`** ([`examples/nav`](./examples/nav/main.go)) — interactive A\* pathfinding (`FindWorldPath`), supercover line-of-sight path smoothing (`SmoothPath`), `InfluenceMap` threat-field stamping/diffusion (`t`), wedge squad escorts (`FollowLeaderBehavior`), weighted mud terrain (`░`), interactive wall toggling (`w`), goal relocation (`g`), and Dijkstra `FlowField` crowd steering (`c`).
 - **`task run-scene3d`** ([`examples/scene3d`](./examples/scene3d/main.go)) — interactive 3D [`nt3d`](https://github.com/NimbleTerminal/nt3d) arena driving 3D cone guards (`FSM`), 3D sphere scouts (`BehaviorTree` + A\* path lines around 3D cylindrical pillars), spinning 3D torus beacons, and a 3D Boids murmuration point cloud (`SetNodeGeometry` / `PointStyle`) with mouse camera orbiting, ray-cast floor picking, and WebGPU/Software/Wireframe rendering.
-- **`task run-planner`** ([`examples/planner`](./examples/planner/main.go)) — declarative JSON `BehaviorSpec` compiler (`BehaviorRegistry`) supporting `BehaviorTree`, `UtilitySelector`, and `FSM` specs, per-Actor `Blackboard` and `ExecutionTrace` inspector (`TraceActor`), counterfactual rollout ranking (`CompareRollouts`), evolutionary parameter tuning (`OptimizeSpec`), and `EventLog` behavior hot-swapping.
+- **`task run-planner`** ([`examples/planner`](./examples/planner/main.go)) — declarative JSON `BehaviorSpec` compiler (`BehaviorRegistry`) supporting `BehaviorTree`, `UtilitySelector`, `FSM`, and `GOAP` specs, per-Actor `Blackboard` and `ExecutionTrace` inspector (`TraceActor`), counterfactual rollout ranking (`CompareRollouts`), evolutionary parameter tuning (`OptimizeSpec`), and `EventLog` behavior hot-swapping.
 - **`task run-replay`** ([`examples/replay`](./examples/replay/main.go)) — CLI verification demo recording a live simulation into an `EventLog`, round-tripping through JSON/binary codecs, replaying via `HistoricalDriver`, and asserting identical `World.Hash()` digests.
 - **`task tapes`** ([`tapes/`](./tapes)) — records `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs (`dist/tapes/*.gif`) and README screenshots (`docs/images/*.png`) using [`ntrecord`](https://github.com/NimbleTerminal/ntrecord).
 
@@ -121,8 +121,9 @@ task serve-wasm-site   # builds web/demos/*.wasm, stages booba assets, serves ht
 | [`goap.go`](./goap.go) | `GOAPFact`, `GOAPAction`, `GOAPGoal`, `PlanGOAP`, `GOAPNode`, `NewGOAP` | Deterministic STRIPS / F.E.A.R.-style Goal-Oriented Action Planning over `Blackboard` preconditions and effects |
 | [`blackboard.go`](./blackboard.go) | `Blackboard`, `BlackboardValue`, `WorldSnapshot`, `World.SnapshotJSON` | Sorted, deterministic key-value memory store on `World` and `Actor`, folded into `World.Hash()` |
 | [`spec.go`](./spec.go) | `BehaviorSpec`, `BehaviorRegistry`, `NewStandardRegistry`, `EvaluateRollout`, `CompareRollouts` | Declarative JSON behavior compiler, schema catalog (`CatalogJSON`), `Event`-driven behavior hot-swapping, and headless counterfactual rollout evaluator |
-| [`steering.go`](./steering.go) | `Vec3`, `Vec2`, `SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`, `SteerSeparation`, `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `FlockBehavior`, `PatrolBehavior`, `WanderBehavior` | Abstract 2D/3D vector kinematics, obstacle avoidance, and Reynolds Boids flocking |
-| [`nav.go`](./nav.go) | `NavGraph`, `NodeID`, `FindPath`, `FindPathNodes`, `GridMap`, `FlowField`, `FollowPathBehavior`, `FlowFieldBehavior` | Deterministic A\* pathfinding, line-of-sight path smoothing, weighted occupancy grids, and Dijkstra flow fields |
+| [`steering.go`](./steering.go) | `Vec3`, `Vec2`, `SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`, `SteerSeparation`, `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `SteerAvoidActors`, `FormationOffsets`, `FollowLeaderBehavior`, `FlockBehavior`, `PatrolBehavior`, `WanderBehavior` | Abstract 2D/3D vector kinematics, reciprocal obstacle avoidance, squad formations, and Reynolds Boids flocking |
+| [`nav.go`](./nav.go) | `NavGraph`, `NodeID`, `FindPath`, `FindPathNodes`, `GridMap`, `FlowField`, `WaypointGraph`, `VoxelGrid`, `FollowPathBehavior`, `FlowFieldBehavior` | Deterministic 2D/3D A\* pathfinding, line-of-sight path smoothing, weighted occupancy grids, and Dijkstra flow fields |
+| [`influence.go`](./influence.go) | `InfluenceMap`, `NewInfluenceMap`, `NewInfluenceMapFromGrid`, `SteerInfluence` | Deterministic 2D threat & pheromone fields with LOS-occluded stamping, wall-aware decay/diffusion, gradient steering, and `GridMap` cost coupling |
 | [`driver_live.go`](./driver_live.go) | `LiveDriver`, `LiveConfig`, `Frame`, `EventLog`, `Driver` | Accumulates wall time (variable clamped `dt` or fixed `FixedDT`), injects live events, and records an `EventLog` |
 | [`driver_historical.go`](./driver_historical.go) | `HistoricalDriver` | Replays a recorded `EventLog` or scripted `[]Frame` sequence for bit-exact historical determinism |
 | [`codec.go`](./codec.go) | `EncodeEventLogJSON`, `DecodeEventLogJSON`, `MarshalEventLogBinary`, `UnmarshalEventLogBinary` | Bounded JSON and compact binary serialization for recorded `EventLog` replays |
@@ -174,11 +175,34 @@ bt := actor.NewBehaviorTree(actor.Selector(
 ))
 ```
 
-## Steering, Boids Flocking & Spatial Indexing
+### Utility AI (`UtilitySelector`) & Goal-Oriented Action Planning (`GOAPNode`)
+
+- **`UtilitySelector`** scores candidate `UtilityOption` branches using normalized `ResponseCurve` considerations (`CurveLinear`, `CurveQuadratic`, `CurveSqrt`, `CurveLogistic`, `CurveStep`) with geometric-mean compensation so multi-consideration options aren't penalized.
+- **`GOAPNode` & `PlanGOAP`** perform deterministic A\* state-space search over `Blackboard` preconditions and effects (`FactBool`, `FactFloat`, `FactInt`, `FactString`) to synthesize multi-step action plans toward the highest-priority unsatisfied `GOAPGoal`, automatically replanning when world facts change.
+
+### Declarative `BehaviorSpec`, Counterfactual Rollouts & Evolutionary Tuning
+
+Compile, inspect (`TraceActor`), hot-swap (`RegisterSwapHandler`), rank (`CompareRollouts`), and evolutionarily tune (`OptimizeSpec`) JSON-serializable `BehaviorSpec` ASTs spanning `BehaviorTree`, `UtilitySelector`, `FSM`, and `GOAP`:
+
+```go
+reg := actor.NewStandardRegistry(actor.StandardRegistryConfig{
+    GridMap:      gm,
+    InfluenceMap: im,
+})
+bt, err := reg.CompileJSON(specJSON)
+
+// Evaluate or evolutionarily tune candidate specs in fast headless rollouts:
+opt := actor.OptimizeSpec(baseCfg, 6, 4, 0.25)
+bestBT, _ := reg.Compile(opt.Best.Spec)
+```
+
+## Steering, Avoidance, Formations, Boids Flocking & Spatial Indexing
 
 Attach `NewGridIndex(cellSize)` to `Config.Perception` to accelerate `Neighbors`, `ActorsWithinRadius`, `ActorsWithinCone`, and `NearestActor` from $O(N)$ to uniform 2D/3D spatial grid lookups while preserving deterministic `ActorID` ordering.
 
-`FlockBehavior` combines Reynolds **Separation**, **Alignment**, and **Cohesion** with optional target attraction (`AttractTag`), predator evasion (`RepelTag`), wander jitter, and soft boundary containment:
+- **Reciprocal Collision Avoidance (`SteerAvoidActors`)** — time-to-closest-approach velocity avoidance so Actors passing through narrow doorways or bi-directional corridors deflect smoothly without colliding.
+- **Squad & Leader Formations (`FormationOffsets`, `FollowLeaderBehavior`)** — `FormationWedge`, `FormationLine`, `FormationColumn`, and `FormationRing` slot offsets rotated dynamically by a leader Actor's heading.
+- **Reynolds Boids (`FlockBehavior`)** — combines **Separation**, **Alignment**, and **Cohesion** with optional target attraction (`AttractTag`), predator evasion (`RepelTag`), wander jitter, and soft boundary containment:
 
 ```go
 world.Spawn(actor.Actor{
@@ -201,15 +225,22 @@ world.Spawn(actor.Actor{
 })
 ```
 
-## Pathfinding & Flow Fields
+## Pathfinding, 3D Navigation, Flow Fields & Influence Maps
 
 - **`NavGraph` & `FindPathNodes` / `FindPath`** — interface-based deterministic A\* search over any custom waypoint or navmesh graph, breaking f-score ties by `NodeID`.
 - **`GridMap`** — 2D occupancy and weighted-cost grid (`SetWall`, `SetRectWall`, `SetCost`) with 8-connected movement, diagonal corner-clipping prevention, supercover Bresenham `HasLineOfSight` (compatible with `Config.LineOfSight`), string-pulling `SmoothPath`, and one-call `FindWorldPath` + `FollowPathBehavior`.
+- **3D Navigation (`WaypointGraph`, `VoxelGrid`)** — arbitrary 3D waypoint/portal graphs and 3D 26-connected volumetric voxel grids with 3D `HasLineOfSight`, `SmoothPath`, and `FindWorldPath`.
 - **`FlowField` & `FlowFieldBehavior`** — single-pass Dijkstra integration field computed toward a goal cell (`FlowField.Compute`), enabling hundreds of crowd Actors to steer around walls and high-cost terrain with zero per-actor A\* replanning overhead.
+- **Spatial Influence & Pheromone Maps (`InfluenceMap`)** — deterministic 2D threat, tactical control, and stigmergic pheromone fields with LOS-occluded radial stamping (`StampRadiusWithLOS`), wall-aware decay and 4-neighbor diffusion (`StepWithWalls`), gradient steering (`SteerInfluence`), and direct `GridMap` cost coupling (`ApplyCostToGridMap`):
 
 ```go
 gm := actor.NewGridMap(50, 20, 1.0, actor.Vec2(0, 0))
 gm.SetRectWall(20, 0, 20, 14, true)
+
+// Stamp a threat zone and couple it into GridMap A* / FlowField traversal costs:
+im := actor.NewInfluenceMapFromGrid(gm)
+im.StampRadiusWithLOS(actor.Vec2(30.5, 10.5), 5.0, 10.0, gm)
+im.ApplyCostToGridMap(gm, 1.0, 3.0)
 
 path, ok := gm.FindWorldPath(actor.Vec2(2.5, 2.5), actor.Vec2(45.5, 10.5), true)
 follow := &actor.FollowPathBehavior{Path: path, Speed: 6.0, MaxForce: 30.0, ArrivalRadius: 0.4}

@@ -593,7 +593,8 @@ func newPlannerModel(seed uint64) plannerModel {
 		panic(err)
 	}
 	gm := buildPlannerGridMap()
-	reg := ntactor.NewStandardRegistry(ntactor.StandardRegistryConfig{GridMap: gm})
+	im := ntactor.NewInfluenceMapFromGrid(gm)
+	reg := ntactor.NewStandardRegistry(ntactor.StandardRegistryConfig{GridMap: gm, InfluenceMap: im})
 	presets := buildCandidateSpecs()
 	w := buildPlannerWorld(seed, gm, reg, presets[0].Spec)
 	live := ntactor.NewLiveDriver(ntactor.LiveConfig{
