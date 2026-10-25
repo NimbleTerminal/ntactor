@@ -144,6 +144,32 @@ func (v BlackboardValue) ActorID() (ActorID, bool) {
 	return InvalidActorID, false
 }
 
+// Equal reports whether v and other hold the same logical value (treating
+// numeric float64 and int64 values within 1e-9 as equal).
+func (v BlackboardValue) Equal(other BlackboardValue) bool {
+	if fv, ok1 := v.Float(); ok1 {
+		if fo, ok2 := other.Float(); ok2 {
+			return math.Abs(fv-fo) <= 1e-9
+		}
+		return false
+	}
+	if v.kind != other.kind {
+		return false
+	}
+	switch v.kind {
+	case KindBool:
+		return v.b == other.b
+	case KindString:
+		return v.s == other.s
+	case KindVec3:
+		return v.v.DistSq(other.v) <= 1e-18
+	case KindActorID:
+		return v.id == other.id
+	default:
+		return v.kind == 0 && other.kind == 0
+	}
+}
+
 // MarshalJSON serializes BlackboardValue as a compact JSON value.
 func (v BlackboardValue) MarshalJSON() ([]byte, error) {
 	switch v.kind {
@@ -162,6 +188,25 @@ func (v BlackboardValue) MarshalJSON() ([]byte, error) {
 	default:
 		return []byte("null"), nil
 	}
+}
+
+// UnmarshalJSON parses a JSON boolean, number, or string into a BlackboardValue.
+func (v *BlackboardValue) UnmarshalJSON(data []byte) error {
+	var raw any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	switch val := raw.(type) {
+	case bool:
+		*v = BoolValue(val)
+	case float64:
+		*v = FloatValue(val)
+	case string:
+		*v = StringValue(val)
+	default:
+		*v = BlackboardValue{}
+	}
+	return nil
 }
 
 // BlackboardEntry is a single key-value pair in a Blackboard.
@@ -451,6 +496,29 @@ func (b *Blackboard) mixHash(mixUint64 func(uint64), mixString func(string)) {
 			mixUint64(uint64(e.Value.id))
 		}
 	}
+}
+
+// Hash returns a deterministic 64-bit FNV-1a digest of the Blackboard's entries.
+func (b *Blackboard) Hash() uint64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	var h uint64 = offset64
+	mixU := func(v uint64) {
+		for i := 0; i < 8; i++ {
+			h ^= uint64(byte(v >> (8 * i)))
+			h *= prime64
+		}
+	}
+	mixS := func(s string) {
+		for i := 0; i < len(s); i++ {
+			h ^= uint64(s[i])
+			h *= prime64
+		}
+	}
+	b.mixHash(mixU, mixS)
+	return h
 }
 
 // ActorSnapshot is a JSON-serializable snapshot of a single Actor's kinematics

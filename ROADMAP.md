@@ -5,6 +5,11 @@ is already implemented.
 
 ## Done
 
+- [x] **Goal-Oriented Action Planning (`goap.go`, `spec.go`, `examples/planner`)**:
+  STRIPS / F.E.A.R.-style `GOAPFact`, `GOAPAction`, `GOAPGoal`, deterministic A\*
+  state-space planner (`PlanGOAP`), `GOAPNode`, declarative `"goap"`
+  `BehaviorSpec` (`GOAPSensorSpec`, `GOAPGoalSpec`, `GOAPActionSpec`), and
+  `ExecutionTrace` integration (`GOAPGoal`, `GOAPPlan`).
 - [x] **`ntrecord` demo tapes & screenshots (`tapes/`, `docs/images/`, `Taskfile.yml`)**:
   `.tape` scripts (`arena.tape`, `flock.tape`, `nav.tape`, `scene3d.tape`,
   `planner.tape`, `common.tape`) and `task tapes` target recording GIFs and

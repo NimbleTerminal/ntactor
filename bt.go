@@ -42,6 +42,8 @@ type TraceEntry struct {
 	FSMState       StateID              `json:"fsm_state,omitempty"`
 	FSMTimeInState float64              `json:"fsm_time_in_state,omitempty"`
 	UtilityOptions []UtilityOptionTrace `json:"utility_options,omitempty"`
+	GOAPGoal       string               `json:"goap_goal,omitempty"`
+	GOAPPlan       []string             `json:"goap_plan,omitempty"`
 }
 
 // ExecutionTrace captures the per-tick evaluation trace of a BehaviorTree.
@@ -137,6 +139,15 @@ func (t *BehaviorTree) Tick(dt float64, self *Actor, world *World) {
 				FSMState:       r.Current(),
 				FSMTimeInState: r.TimeInState(),
 			})
+		case *GOAPNode:
+			t.trace.Entries = append(t.trace.Entries, TraceEntry{
+				Path:     "root",
+				Type:     "goap",
+				Name:     r.CurrentAction(),
+				Status:   t.lastStatus.String(),
+				GOAPGoal: r.ActiveGoal(),
+				GOAPPlan: r.CurrentPlan(),
+			})
 		default:
 			t.trace.Entries = append(t.trace.Entries, TraceEntry{
 				Path:   "root",
@@ -154,6 +165,8 @@ func (t *BehaviorTree) Tick(dt float64, self *Actor, world *World) {
 			t.trace.ActivePath = append(t.trace.ActivePath, "utility->"+e.Name)
 		case e.Type == "fsm" && e.FSMState != "":
 			t.trace.ActivePath = append(t.trace.ActivePath, "fsm:"+string(e.FSMState))
+		case e.Type == "goap" && e.GOAPGoal != "":
+			t.trace.ActivePath = append(t.trace.ActivePath, "goap:"+e.GOAPGoal+"["+e.Name+"]")
 		case e.Name != "":
 			t.trace.ActivePath = append(t.trace.ActivePath, e.Type+":"+e.Name)
 		default:

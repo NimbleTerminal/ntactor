@@ -1634,3 +1634,179 @@ func Test3DNavigationWaypointGraphAndVoxelGrid(t *testing.T) {
 			len(smooth3D), len(raw3D))
 	}
 }
+
+func TestGOAPMultiStepPlanningReplanningAndSpec(t *testing.T) {
+	// 1. Direct PlanGOAP cost-optimal multi-step action synthesis.
+	bb := NewBlackboard()
+	goal := GOAPGoal{
+		Name:     "secure_vault",
+		Priority: 1.0,
+		Desired:  []GOAPFact{FactBool("in_vault", true)},
+	}
+	actions := []GOAPAction{
+		{
+			Name:    "find_explosive",
+			Cost:    5.0,
+			Effects: []GOAPFact{FactBool("has_explosive", true)},
+		},
+		{
+			Name:          "blast_vault",
+			Cost:          5.0,
+			Preconditions: []GOAPFact{FactBool("has_explosive", true)},
+			Effects:       []GOAPFact{FactBool("in_vault", true)},
+		},
+		{
+			Name:    "find_key",
+			Cost:    1.0,
+			Effects: []GOAPFact{FactBool("has_key", true)},
+		},
+		{
+			Name:          "unlock_door",
+			Cost:          1.0,
+			Preconditions: []GOAPFact{FactBool("has_key", true)},
+			Effects:       []GOAPFact{FactBool("door_open", true)},
+		},
+		{
+			Name:          "enter_vault",
+			Cost:          1.0,
+			Preconditions: []GOAPFact{FactBool("door_open", true)},
+			Effects:       []GOAPFact{FactBool("in_vault", true)},
+		},
+	}
+
+	plan, cost, ok := PlanGOAP(nil, nil, bb, goal, actions, 256)
+	if !ok || len(plan) != 3 || math.Abs(cost-3.0) > 1e-9 {
+		t.Fatalf("expected 3-step optimal plan of cost 3.0, got ok=%v len=%d cost=%v", ok, len(plan), cost)
+	}
+	if plan[0].Name != "find_key" || plan[1].Name != "unlock_door" || plan[2].Name != "enter_vault" {
+		t.Fatalf("unexpected plan order: %s -> %s -> %s", plan[0].Name, plan[1].Name, plan[2].Name)
+	}
+
+	// 2. Declarative "goap" BehaviorSpec JSON compilation, sensor-driven execution, and ExecutionTrace.
+	reg := NewStandardRegistry(StandardRegistryConfig{})
+	goapJSON := `{
+		"type": "goap",
+		"sensors": [
+			{
+				"key": "intruder_present",
+				"condition": {
+					"type": "condition",
+					"name": "tag_within_radius",
+					"params": {"tag": "intruder", "radius": 30.0}
+				}
+			},
+			{
+				"key": "beacon_present",
+				"condition": {
+					"type": "condition",
+					"name": "tag_within_radius",
+					"params": {"tag": "beacon", "radius": 30.0}
+				}
+			}
+		],
+		"goals": [
+			{
+				"name": "clear_intruders",
+				"priority": 2.0,
+				"desired": [{"key": "intruder_present", "value": false}]
+			},
+			{
+				"name": "collect_beacons",
+				"priority": 1.0,
+				"desired": [{"key": "beacon_present", "value": false}]
+			}
+		],
+		"actions": [
+			{
+				"name": "acquire_lock",
+				"cost": 1.0,
+				"preconditions": [
+					{"key": "intruder_present", "value": true},
+					{"key": "weapons_hot", "value": false}
+				],
+				"effects": [{"key": "weapons_hot", "value": true}],
+				"child": {
+					"type": "action",
+					"name": "emit_intent",
+					"params": {"kind": "weapons_hot"}
+				}
+			},
+			{
+				"name": "engage_intruder",
+				"cost": 2.0,
+				"preconditions": [
+					{"key": "intruder_present", "value": true},
+					{"key": "weapons_hot", "value": true}
+				],
+				"effects": [
+					{"key": "intruder_present", "value": false},
+					{"key": "weapons_hot", "value": false}
+				],
+				"child": {
+					"type": "action",
+					"name": "pursue_tag",
+					"params": {
+						"tag": "intruder",
+						"speed": 10.0,
+						"capture_radius": 1.3,
+						"destroy_target": true,
+						"score_key": "captures",
+						"intent": "captured_intruder"
+					}
+				}
+			},
+			{
+				"name": "navigate_beacon",
+				"cost": 2.0,
+				"preconditions": [{"key": "beacon_present", "value": true}],
+				"effects": [{"key": "beacon_present", "value": false}],
+				"child": {
+					"type": "action",
+					"name": "arrive_tag",
+					"params": {
+						"tag": "beacon",
+						"speed": 9.0,
+						"capture_radius": 1.2,
+						"destroy_target": true,
+						"score_key": "beacons",
+						"intent": "collected_beacon"
+					}
+				}
+			}
+		]
+	}`
+
+	bt, err := reg.CompileJSON([]byte(goapJSON))
+	if err != nil {
+		t.Fatalf("CompileJSON(goapJSON) failed: %v", err)
+	}
+
+	w := NewWorld(Config{Seed: 42, Perception: NewGridIndex(3.0)})
+	uid := w.Spawn(Actor{Tag: "unit", Position: Vec2(0, 0), Behavior: bt})
+	w.Spawn(Actor{Tag: "intruder", Position: Vec2(3, 0), Behavior: Idle})
+	w.Spawn(Actor{Tag: "beacon", Position: Vec2(-3, 0), Behavior: Idle})
+
+	// Tick 1: GOAP plans [acquire_lock, engage_intruder] for goal "clear_intruders".
+	w.Tick(0.05, nil)
+	unit := w.ActorByID(uid)
+	if got := unit.Blackboard().StringOr("goap_goal", ""); got != "clear_intruders" {
+		t.Fatalf("expected goap_goal 'clear_intruders' on tick 1, got %q", got)
+	}
+	if got := unit.Blackboard().StringOr("goap_plan", ""); got != "acquire_lock->engage_intruder" {
+		t.Fatalf("expected 2-step plan 'acquire_lock->engage_intruder', got %q", got)
+	}
+	tr, ok := TraceActor(unit)
+	if !ok || len(tr.Entries) == 0 || tr.Entries[0].GOAPGoal != "clear_intruders" || len(tr.Entries[0].GOAPPlan) != 2 {
+		t.Fatalf("unexpected GOAP ExecutionTrace on tick 1: %+v", tr)
+	}
+
+	// Run 60 ticks: unit should execute acquire_lock -> engage_intruder, then replan
+	// for collect_beacons -> navigate_beacon!
+	for range 60 {
+		w.Tick(0.05, nil)
+	}
+	if unit.Blackboard().FloatOr("captures", 0) != 1 || unit.Blackboard().FloatOr("beacons", 0) != 1 {
+		t.Fatalf("expected GOAP unit to capture intruder and collect beacon, got captures=%v beacons=%v",
+			unit.Blackboard().FloatOr("captures", 0), unit.Blackboard().FloatOr("beacons", 0))
+	}
+}

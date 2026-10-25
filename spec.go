@@ -208,6 +208,7 @@ func (r *BehaviorRegistry) Catalog() RegistryCatalog {
 			"action",
 			"utility",
 			"fsm",
+			"goap",
 		},
 	}
 	if r == nil {
@@ -272,8 +273,32 @@ type FSMTransitionSpec struct {
 	AfterSeconds float64       `json:"after_seconds,omitempty"`
 }
 
+// GOAPSensorSpec binds a Blackboard boolean key to a Condition BehaviorSpec
+// evaluated before each GOAP tick.
+type GOAPSensorSpec struct {
+	Key       string        `json:"key"`
+	Condition *BehaviorSpec `json:"condition"`
+}
+
+// GOAPGoalSpec is a declarative goal inside a "goap" BehaviorSpec node.
+type GOAPGoalSpec struct {
+	Name     string     `json:"name"`
+	Priority float64    `json:"priority,omitempty"`
+	Desired  []GOAPFact `json:"desired"`
+}
+
+// GOAPActionSpec is a declarative planning operator inside a "goap" BehaviorSpec node.
+type GOAPActionSpec struct {
+	Name          string        `json:"name"`
+	Cost          float64       `json:"cost,omitempty"`
+	Preconditions []GOAPFact    `json:"preconditions,omitempty"`
+	Effects       []GOAPFact    `json:"effects"`
+	Condition     *BehaviorSpec `json:"condition,omitempty"`
+	Child         *BehaviorSpec `json:"child"`
+}
+
 // BehaviorSpec is a declarative, JSON-serializable AST describing a composite
-// BehaviorTree, UtilitySelector, and/or FSM built from registered primitives.
+// BehaviorTree, UtilitySelector, FSM, and/or GOAP planner built from registered primitives.
 type BehaviorSpec struct {
 	Type              string              `json:"type"`
 	Name              string              `json:"name,omitempty"`
@@ -286,6 +311,9 @@ type BehaviorSpec struct {
 	InitialState      StateID             `json:"initial_state,omitempty"`
 	States            []FSMStateSpec      `json:"states,omitempty"`
 	Transitions       []FSMTransitionSpec `json:"transitions,omitempty"`
+	Sensors           []GOAPSensorSpec    `json:"sensors,omitempty"`
+	Goals             []GOAPGoalSpec      `json:"goals,omitempty"`
+	Actions           []GOAPActionSpec    `json:"actions,omitempty"`
 }
 
 func validateParams(path string, def PrimitiveDef, raw map[string]any) (Params, error) {
@@ -394,6 +422,10 @@ func (n tracedBTNode) Evaluate(dt float64, self *Actor, world *World) NodeStatus
 			if self != nil {
 				self.Blackboard().SetString("fsm_state", string(inner.Current()))
 			}
+		case *GOAPNode:
+			e.Name = inner.CurrentAction()
+			e.GOAPGoal = inner.ActiveGoal()
+			e.GOAPPlan = inner.CurrentPlan()
 		}
 	}
 	return st
@@ -667,6 +699,84 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 			})
 		}
 		return wrap(fsm), nil
+
+	case "goap":
+		if len(spec.Goals) == 0 {
+			return nil, fmt.Errorf("%w at %s: \"goap\" requires non-empty goals", ErrInvalidSpec, path)
+		}
+		if len(spec.Actions) == 0 {
+			return nil, fmt.Errorf("%w at %s: \"goap\" requires non-empty actions", ErrInvalidSpec, path)
+		}
+		sensors := make([]func(self *Actor, world *World), len(spec.Sensors))
+		for i, sspec := range spec.Sensors {
+			sPath := fmt.Sprintf("%s.sensors[%d]", path, i)
+			if sspec.Key == "" {
+				return nil, fmt.Errorf("%w at %s: sensor requires a key", ErrInvalidSpec, sPath)
+			}
+			if sspec.Condition == nil {
+				return nil, fmt.Errorf("%w at %s: sensor %q requires a condition node", ErrInvalidSpec, sPath, sspec.Key)
+			}
+			condNode, err := r.compileNode(sPath+".condition", *sspec.Condition, depth+1, count, nil)
+			if err != nil {
+				return nil, err
+			}
+			key := sspec.Key
+			sensors[i] = func(self *Actor, world *World) {
+				res := condNode.Evaluate(0, self, world) == StatusSuccess
+				self.Blackboard().SetBool(key, res)
+			}
+		}
+		goals := make([]GOAPGoal, len(spec.Goals))
+		for i, gspec := range spec.Goals {
+			gPath := fmt.Sprintf("%s.goals[%d]", path, i)
+			if gspec.Name == "" {
+				return nil, fmt.Errorf("%w at %s: goal requires a name", ErrInvalidSpec, gPath)
+			}
+			if len(gspec.Desired) == 0 {
+				return nil, fmt.Errorf("%w at %s: goal %q requires desired facts", ErrInvalidSpec, gPath, gspec.Name)
+			}
+			goals[i] = GOAPGoal{
+				Name:     gspec.Name,
+				Priority: gspec.Priority,
+				Desired:  slices.Clone(gspec.Desired),
+			}
+		}
+		actions := make([]GOAPAction, len(spec.Actions))
+		for i, aspec := range spec.Actions {
+			aPath := fmt.Sprintf("%s.actions[%d]", path, i)
+			if aspec.Name == "" {
+				return nil, fmt.Errorf("%w at %s: goap action requires a name", ErrInvalidSpec, aPath)
+			}
+			if len(aspec.Effects) == 0 {
+				return nil, fmt.Errorf("%w at %s: goap action %q requires effects", ErrInvalidSpec, aPath, aspec.Name)
+			}
+			if aspec.Child == nil {
+				return nil, fmt.Errorf("%w at %s: goap action %q requires a child node", ErrInvalidSpec, aPath, aspec.Name)
+			}
+			ch, err := r.compileNode(fmt.Sprintf("%s.actions[%s].child", path, aspec.Name), *aspec.Child, depth+1, count, trace)
+			if err != nil {
+				return nil, err
+			}
+			var procFn func(self *Actor, world *World) bool
+			if aspec.Condition != nil {
+				condNode, err := r.compileNode(aPath+".condition", *aspec.Condition, depth+1, count, nil)
+				if err != nil {
+					return nil, err
+				}
+				procFn = func(self *Actor, world *World) bool {
+					return condNode.Evaluate(0, self, world) == StatusSuccess
+				}
+			}
+			actions[i] = GOAPAction{
+				Name:            aspec.Name,
+				Cost:            aspec.Cost,
+				Preconditions:   slices.Clone(aspec.Preconditions),
+				Effects:         slices.Clone(aspec.Effects),
+				CheckProcedural: procFn,
+				Node:            ch,
+			}
+		}
+		return wrap(NewGOAP(goals, actions, sensors...)), nil
 
 	default:
 		return nil, fmt.Errorf("%w at %s: unknown node type %q", ErrInvalidSpec, path, spec.Type)
@@ -1554,6 +1664,47 @@ func CloneSpec(spec BehaviorSpec) BehaviorSpec {
 			out.Transitions[i] = cp
 		}
 	}
+	if len(spec.Sensors) > 0 {
+		out.Sensors = make([]GOAPSensorSpec, len(spec.Sensors))
+		for i, s := range spec.Sensors {
+			cp := s
+			if s.Condition != nil {
+				cond := CloneSpec(*s.Condition)
+				cp.Condition = &cond
+			}
+			out.Sensors[i] = cp
+		}
+	}
+	if len(spec.Goals) > 0 {
+		out.Goals = make([]GOAPGoalSpec, len(spec.Goals))
+		for i, g := range spec.Goals {
+			out.Goals[i] = GOAPGoalSpec{
+				Name:     g.Name,
+				Priority: g.Priority,
+				Desired:  slices.Clone(g.Desired),
+			}
+		}
+	}
+	if len(spec.Actions) > 0 {
+		out.Actions = make([]GOAPActionSpec, len(spec.Actions))
+		for i, a := range spec.Actions {
+			cp := GOAPActionSpec{
+				Name:          a.Name,
+				Cost:          a.Cost,
+				Preconditions: slices.Clone(a.Preconditions),
+				Effects:       slices.Clone(a.Effects),
+			}
+			if a.Condition != nil {
+				cond := CloneSpec(*a.Condition)
+				cp.Condition = &cond
+			}
+			if a.Child != nil {
+				ch := CloneSpec(*a.Child)
+				cp.Child = &ch
+			}
+			out.Actions[i] = cp
+		}
+	}
 	return out
 }
 
@@ -1698,6 +1849,34 @@ func MutateSpec(rng *RNG, spec BehaviorSpec, cfg MutateConfig) BehaviorSpec {
 					})
 				}
 				walk(trPtr.Condition)
+			}
+		case "goap":
+			for i := range node.Sensors {
+				walk(node.Sensors[i].Condition)
+			}
+			for i := range node.Goals {
+				gPtr := &node.Goals[i]
+				slots = append(slots, func() {
+					curP := gPtr.Priority
+					if curP <= 0 {
+						curP = 1.0
+					}
+					minP, maxP := 0.1, 20.0
+					gPtr.Priority = perturbFloatBounds(rng, curP, sigma, &minP, &maxP)
+				})
+			}
+			for i := range node.Actions {
+				aPtr := &node.Actions[i]
+				slots = append(slots, func() {
+					curC := aPtr.Cost
+					if curC <= 0 {
+						curC = 1.0
+					}
+					minC, maxC := 0.1, 20.0
+					aPtr.Cost = perturbFloatBounds(rng, curC, sigma, &minC, &maxC)
+				})
+				walk(aPtr.Condition)
+				walk(aPtr.Child)
 			}
 		}
 		walk(node.Child)

@@ -211,6 +211,112 @@ func buildCandidateSpecs() []presetSpec {
 			},
 		},
 		{
+			name: "goap_operative",
+			desc: "GOAP: A* multi-step action planner over Blackboard preconditions & effects",
+			spec: ntactor.BehaviorSpec{
+				Type: "goap",
+				Sensors: []ntactor.GOAPSensorSpec{
+					{
+						Key: "intruder_present",
+						Condition: &ntactor.BehaviorSpec{
+							Type:   "condition",
+							Name:   "tag_within_radius",
+							Params: map[string]any{"tag": "intruder", "radius": 35.0},
+						},
+					},
+					{
+						Key: "beacon_present",
+						Condition: &ntactor.BehaviorSpec{
+							Type:   "condition",
+							Name:   "tag_within_radius",
+							Params: map[string]any{"tag": "beacon", "radius": 45.0},
+						},
+					},
+				},
+				Goals: []ntactor.GOAPGoalSpec{
+					{
+						Name:     "clear_intruders",
+						Priority: 2.0,
+						Desired:  []ntactor.GOAPFact{ntactor.FactBool("intruder_present", false)},
+					},
+					{
+						Name:     "collect_beacons",
+						Priority: 1.5,
+						Desired:  []ntactor.GOAPFact{ntactor.FactBool("beacon_present", false)},
+					},
+					{
+						Name:     "patrol_sector",
+						Priority: 0.5,
+						Desired:  []ntactor.GOAPFact{ntactor.FactBool("sector_patrolled", true)},
+					},
+				},
+				Actions: []ntactor.GOAPActionSpec{
+					{
+						Name:          "acquire_lock",
+						Cost:          1.0,
+						Preconditions: []ntactor.GOAPFact{ntactor.FactBool("intruder_present", true), ntactor.FactBool("weapons_hot", false)},
+						Effects:       []ntactor.GOAPFact{ntactor.FactBool("weapons_hot", true)},
+						Child: &ntactor.BehaviorSpec{
+							Type:   "action",
+							Name:   "emit_intent",
+							Params: map[string]any{"kind": "weapons_hot"},
+						},
+					},
+					{
+						Name:          "engage_intruder",
+						Cost:          2.0,
+						Preconditions: []ntactor.GOAPFact{ntactor.FactBool("intruder_present", true), ntactor.FactBool("weapons_hot", true)},
+						Effects:       []ntactor.GOAPFact{ntactor.FactBool("intruder_present", false), ntactor.FactBool("weapons_hot", false)},
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "pursue_tag",
+							Params: map[string]any{
+								"tag":            "intruder",
+								"speed":          10.5,
+								"capture_radius": 1.3,
+								"destroy_target": true,
+								"score_key":      "captures",
+								"intent":         "captured_intruder",
+							},
+						},
+					},
+					{
+						Name:          "navigate_beacon",
+						Cost:          2.0,
+						Preconditions: []ntactor.GOAPFact{ntactor.FactBool("beacon_present", true)},
+						Effects:       []ntactor.GOAPFact{ntactor.FactBool("beacon_present", false)},
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "follow_path_to_tag",
+							Params: map[string]any{
+								"tag":            "beacon",
+								"speed":          9.0,
+								"smooth":         true,
+								"capture_radius": 1.2,
+								"destroy_target": true,
+								"score_key":      "beacons",
+								"intent":         "collected_beacon",
+							},
+						},
+					},
+					{
+						Name:    "patrol_perimeter",
+						Cost:    3.0,
+						Effects: []ntactor.GOAPFact{ntactor.FactBool("sector_patrolled", true)},
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "patrol_box",
+							Params: map[string]any{
+								"half_width":  16.0,
+								"half_height": 4.5,
+								"speed":       7.0,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "astar_collector",
 			desc: "Selector: plans smoothed A* paths to Beacons, else wanders",
 			spec: ntactor.BehaviorSpec{
