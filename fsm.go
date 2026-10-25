@@ -13,6 +13,7 @@ type FSMState struct {
 	OnEnter func(self *Actor, world *World)
 	OnTick  func(dt float64, self *Actor, world *World)
 	OnExit  func(self *Actor, world *World)
+	Node    BTNode
 }
 
 // Transition defines a directed conditional edge between two states in an FSM.
@@ -55,6 +56,12 @@ func (f *FSM) AddBehaviorState(id StateID, b Behavior) *FSM {
 		tickFn = b.Tick
 	}
 	f.states[id] = FSMState{OnTick: tickFn}
+	return f
+}
+
+// AddNodeState registers a BTNode as a state's evaluation handler.
+func (f *FSM) AddNodeState(id StateID, node BTNode) *FSM {
+	f.states[id] = FSMState{Node: node}
 	return f
 }
 
@@ -105,9 +112,9 @@ func (f *FSM) SetState(next StateID, self *Actor, world *World) {
 	}
 }
 
-// Tick evaluates transitions for the active state and runs the active state's
-// OnTick callback.
-func (f *FSM) Tick(dt float64, self *Actor, world *World) {
+// Evaluate evaluates transitions for the active state and runs the active state's
+// Node or OnTick callback, adapting FSM to the BTNode interface.
+func (f *FSM) Evaluate(dt float64, self *Actor, world *World) NodeStatus {
 	if !f.started {
 		f.started = true
 		if cur, ok := f.states[f.current]; ok && cur.OnEnter != nil {
@@ -129,7 +136,19 @@ func (f *FSM) Tick(dt float64, self *Actor, world *World) {
 	}
 
 	f.timeInState += dt
-	if cur, ok := f.states[f.current]; ok && cur.OnTick != nil {
-		cur.OnTick(dt, self, world)
+	if cur, ok := f.states[f.current]; ok {
+		if cur.OnTick != nil {
+			cur.OnTick(dt, self, world)
+		}
+		if cur.Node != nil {
+			return cur.Node.Evaluate(dt, self, world)
+		}
 	}
+	return StatusRunning
+}
+
+// Tick evaluates transitions for the active state and runs the active state's
+// OnTick or Node callback.
+func (f *FSM) Tick(dt float64, self *Actor, world *World) {
+	f.Evaluate(dt, self, world)
 }

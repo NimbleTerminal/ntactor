@@ -85,6 +85,25 @@ func (c ResponseCurve) Evaluate(x float64) float64 {
 	return math.Max(0, math.Min(1, y))
 }
 
+// ConsiderationTrace records the evaluation breakdown of a single Consideration
+// during a UtilitySelector evaluation.
+type ConsiderationTrace struct {
+	Name       string  `json:"name"`
+	RawInput   float64 `json:"raw_input"`
+	Normalized float64 `json:"normalized"`
+	Score      float64 `json:"score"`
+}
+
+// UtilityOptionTrace records the score breakdown of a candidate UtilityOption
+// during a UtilitySelector evaluation.
+type UtilityOptionTrace struct {
+	Name           string               `json:"name"`
+	Weight         float64              `json:"weight"`
+	Score          float64              `json:"score"`
+	Selected       bool                 `json:"selected"`
+	Considerations []ConsiderationTrace `json:"considerations,omitempty"`
+}
+
 // Consideration evaluates one normalized factor contributing to a UtilityOption's score.
 type Consideration struct {
 	Name  string
@@ -94,43 +113,71 @@ type Consideration struct {
 	Curve ResponseCurve
 }
 
-// Score normalizes Input(self, world) into [0, 1] using [Min, Max] and applies Curve.
-func (c Consideration) Score(self *Actor, world *World) float64 {
+// EvaluateTrace computes the raw input, normalized [0, 1] value, and response-curve
+// utility score for c.
+func (c Consideration) EvaluateTrace(self *Actor, world *World) ConsiderationTrace {
 	if c.Input == nil {
-		return 0
+		return ConsiderationTrace{Name: c.Name}
 	}
 	raw := c.Input(self, world)
 	if math.IsNaN(raw) {
-		return 0
+		return ConsiderationTrace{Name: c.Name}
 	}
 	minV, maxV := c.Min, c.Max
 	if maxV <= minV {
 		maxV = minV + 1.0
 	}
-	norm := (raw - minV) / (maxV - minV)
-	return c.Curve.Evaluate(norm)
+	norm := math.Max(0, math.Min(1, (raw-minV)/(maxV-minV)))
+	return ConsiderationTrace{
+		Name:       c.Name,
+		RawInput:   raw,
+		Normalized: norm,
+		Score:      c.Curve.Evaluate(norm),
+	}
+}
+
+// Score normalizes Input(self, world) into [0, 1] using [Min, Max] and applies Curve.
+func (c Consideration) Score(self *Actor, world *World) float64 {
+	return c.EvaluateTrace(self, world).Score
+}
+
+func scoreConsiderationsTrace(self *Actor, world *World, considerations []Consideration) (float64, []ConsiderationTrace) {
+	n := len(considerations)
+	if n == 0 {
+		return 1.0, nil
+	}
+	traces := make([]ConsiderationTrace, n)
+	combined := 1.0
+	zeroed := false
+	modFactor := 1.0 - (1.0 / float64(n))
+	for i, c := range considerations {
+		ct := c.EvaluateTrace(self, world)
+		traces[i] = ct
+		if zeroed {
+			continue
+		}
+		s := ct.Score
+		if s <= 0 {
+			combined = 0
+			zeroed = true
+			continue
+		}
+		makeUp := (1.0 - s) * modFactor
+		s = s + (makeUp * s)
+		combined *= s
+	}
+	if zeroed {
+		return 0, traces
+	}
+	return math.Max(0, math.Min(1, combined)), traces
 }
 
 // ScoreConsiderations combines multiple Consideration scores in [0, 1] using
 // multiplicative scoring with Dave Mark's compensation factor so options with
 // more considerations are not unfairly penalized.
 func ScoreConsiderations(self *Actor, world *World, considerations []Consideration) float64 {
-	n := len(considerations)
-	if n == 0 {
-		return 1.0
-	}
-	combined := 1.0
-	modFactor := 1.0 - (1.0 / float64(n))
-	for _, c := range considerations {
-		s := c.Score(self, world)
-		if s <= 0 {
-			return 0
-		}
-		makeUp := (1.0 - s) * modFactor
-		s = s + (makeUp * s)
-		combined *= s
-	}
-	return math.Max(0, math.Min(1, combined))
+	score, _ := scoreConsiderationsTrace(self, world, considerations)
+	return score
 }
 
 // UtilityOption pairs a candidate BTNode with a base weight and considerations.
@@ -149,6 +196,7 @@ type UtilitySelectorNode struct {
 	selectedIndex int
 	selectedName  string
 	selectedScore float64
+	lastTrace     []UtilityOptionTrace
 }
 
 // UtilitySelector constructs a UtilitySelectorNode from options.
@@ -175,23 +223,54 @@ func (u *UtilitySelectorNode) SelectedScore() float64 {
 	return u.selectedScore
 }
 
+// LastTrace returns a copy of the option and consideration score breakdown from
+// the most recent Evaluate call.
+func (u *UtilitySelectorNode) LastTrace() []UtilityOptionTrace {
+	if u == nil || len(u.lastTrace) == 0 {
+		return nil
+	}
+	out := make([]UtilityOptionTrace, len(u.lastTrace))
+	for i, t := range u.lastTrace {
+		if len(t.Considerations) > 0 {
+			cp := make([]ConsiderationTrace, len(t.Considerations))
+			copy(cp, t.Considerations)
+			t.Considerations = cp
+		}
+		out[i] = t
+	}
+	return out
+}
+
 // Evaluate scores all options and evaluates the winning option's BTNode.
 func (u *UtilitySelectorNode) Evaluate(dt float64, self *Actor, world *World) NodeStatus {
 	if u == nil || len(u.options) == 0 {
 		return StatusFailure
 	}
+	if cap(u.lastTrace) < len(u.options) {
+		u.lastTrace = make([]UtilityOptionTrace, len(u.options))
+	} else {
+		u.lastTrace = u.lastTrace[:len(u.options)]
+	}
 	bestIdx := -1
 	bestScore := 0.0
 	for i, opt := range u.options {
-		if opt.Node == nil {
-			continue
-		}
 		w := opt.Weight
 		if w <= 0 {
 			w = 1.0
 		}
-		score := w * ScoreConsiderations(self, world, opt.Considerations)
-		if score > bestScore {
+		rawCombined, cTraces := scoreConsiderationsTrace(self, world, opt.Considerations)
+		score := 0.0
+		if opt.Node != nil {
+			score = w * rawCombined
+		}
+		u.lastTrace[i] = UtilityOptionTrace{
+			Name:           opt.Name,
+			Weight:         w,
+			Score:          score,
+			Selected:       false,
+			Considerations: cTraces,
+		}
+		if opt.Node != nil && score > bestScore {
 			bestScore = score
 			bestIdx = i
 		}
@@ -202,6 +281,7 @@ func (u *UtilitySelectorNode) Evaluate(dt float64, self *Actor, world *World) No
 		u.selectedScore = 0
 		return StatusFailure
 	}
+	u.lastTrace[bestIdx].Selected = true
 	win := u.options[bestIdx]
 	u.selectedIndex = bestIdx
 	u.selectedName = win.Name

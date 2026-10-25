@@ -114,6 +114,103 @@ func buildCandidateSpecs() []presetSpec {
 			},
 		},
 		{
+			name: "fsm_sentinel",
+			desc: "FSM: 3 states (patrol, intercept, collect) with wildcard '*' interrupt",
+			spec: ntactor.BehaviorSpec{
+				Type:         "fsm",
+				InitialState: "patrol",
+				States: []ntactor.FSMStateSpec{
+					{
+						ID: "patrol",
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "patrol_box",
+							Params: map[string]any{
+								"half_width":  16.0,
+								"half_height": 4.5,
+								"speed":       7.0,
+							},
+						},
+					},
+					{
+						ID: "intercept",
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "pursue_tag",
+							Params: map[string]any{
+								"tag":            "intruder",
+								"speed":          10.5,
+								"capture_radius": 1.3,
+								"destroy_target": true,
+								"score_key":      "captures",
+								"intent":         "captured_intruder",
+							},
+						},
+					},
+					{
+						ID: "collect",
+						Child: &ntactor.BehaviorSpec{
+							Type: "action",
+							Name: "follow_path_to_tag",
+							Params: map[string]any{
+								"tag":            "beacon",
+								"speed":          9.0,
+								"smooth":         true,
+								"capture_radius": 1.2,
+								"destroy_target": true,
+								"score_key":      "beacons",
+								"intent":         "collected_beacon",
+							},
+						},
+					},
+				},
+				Transitions: []ntactor.FSMTransitionSpec{
+					{
+						From: "*",
+						To:   "intercept",
+						Condition: &ntactor.BehaviorSpec{
+							Type:   "condition",
+							Name:   "tag_within_radius",
+							Params: map[string]any{"tag": "intruder", "radius": 30.0},
+						},
+					},
+					{
+						From: "intercept",
+						To:   "collect",
+						Condition: &ntactor.BehaviorSpec{
+							Type: "invert",
+							Child: &ntactor.BehaviorSpec{
+								Type:   "condition",
+								Name:   "tag_within_radius",
+								Params: map[string]any{"tag": "intruder", "radius": 30.0},
+							},
+						},
+					},
+					{
+						From: "patrol",
+						To:   "collect",
+						Condition: &ntactor.BehaviorSpec{
+							Type:   "condition",
+							Name:   "tag_within_radius",
+							Params: map[string]any{"tag": "beacon", "radius": 45.0},
+						},
+					},
+					{
+						From: "collect",
+						To:   "patrol",
+						Condition: &ntactor.BehaviorSpec{
+							Type: "invert",
+							Child: &ntactor.BehaviorSpec{
+								Type:   "condition",
+								Name:   "tag_within_radius",
+								Params: map[string]any{"tag": "beacon", "radius": 45.0},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "astar_collector",
 			desc: "Selector: plans smoothed A* paths to Beacons, else wanders",
 			spec: ntactor.BehaviorSpec{
@@ -368,19 +465,20 @@ func tickCmd() tea.Cmd {
 }
 
 type plannerModel struct {
-	seed       uint64
-	gm         *ntactor.GridMap
-	reg        *ntactor.BehaviorRegistry
-	presets    []presetSpec
-	specIdx    int
-	world      *ntactor.World
-	liveDriver *ntactor.LiveDriver
-	histDriver *ntactor.HistoricalDriver
-	rankings   []ntactor.RankedCandidate
-	replaying  bool
-	paused     bool
-	grid       *ntcanvas.GraphemeGrid
-	canvas     ntcanvas.Model
+	seed        uint64
+	gm          *ntactor.GridMap
+	reg         *ntactor.BehaviorRegistry
+	presets     []presetSpec
+	specIdx     int
+	world       *ntactor.World
+	liveDriver  *ntactor.LiveDriver
+	histDriver  *ntactor.HistoricalDriver
+	rankings    []ntactor.RankedCandidate
+	lastTuneMsg string
+	replaying   bool
+	paused      bool
+	grid        *ntcanvas.GraphemeGrid
+	canvas      ntcanvas.Model
 }
 
 func newPlannerModel(seed uint64) plannerModel {
@@ -415,6 +513,14 @@ func newPlannerModel(seed uint64) plannerModel {
 	return m
 }
 
+func (m *plannerModel) rolloutScore(w *ntactor.World, _ []ntactor.IntentSummary) float64 {
+	var total float64
+	for _, u := range w.FindByTag("unit") {
+		total += u.Blackboard().FloatOr("captures", 0)*15.0 + u.Blackboard().FloatOr("beacons", 0)*10.0
+	}
+	return total
+}
+
 func (m *plannerModel) runRolloutComparison() {
 	candidates := make(map[string]ntactor.BehaviorSpec, len(m.presets))
 	for _, p := range m.presets {
@@ -429,17 +535,44 @@ func (m *plannerModel) runRolloutComparison() {
 		TargetTag: "unit",
 		Ticks:     140,
 		DT:        0.05,
-		Score: func(w *ntactor.World, _ []ntactor.IntentSummary) float64 {
-			var total float64
-			for _, u := range w.FindByTag("unit") {
-				total += u.Blackboard().FloatOr("captures", 0)*15.0 + u.Blackboard().FloatOr("beacons", 0)*10.0
-			}
-			return total
-		},
+		Score:     m.rolloutScore,
 	}, candidates)
 	if err == nil {
 		m.rankings = ranked
 	}
+}
+
+func (m *plannerModel) optimizeActiveSpec() {
+	cur := &m.presets[m.specIdx]
+	res, err := ntactor.OptimizeSpec(ntactor.OptimizeConfig{
+		Rollout: ntactor.RolloutConfig{
+			BuildWorld: func(seed uint64) *ntactor.World {
+				return buildPlannerWorld(seed, m.gm, m.reg, m.presets[0].Spec)
+			},
+			Registry:  m.reg,
+			Seed:      m.seed + m.world.TickCount(),
+			TargetTag: "unit",
+			Ticks:     140,
+			DT:        0.05,
+			Score:     m.rolloutScore,
+		},
+		Initial:     cur.Spec,
+		Generations: 3,
+		Population:  5,
+		Mutate:      ntactor.MutateConfig{Registry: m.reg, Probability: 0.6, Sigma: 0.3},
+		Seed:        m.seed + m.world.TickCount() + 100,
+	})
+	if err != nil {
+		return
+	}
+	cur.Spec = res.BestSpec
+	if b, err := json.MarshalIndent(cur.Spec, "", "  "); err == nil {
+		cur.JSON = string(b)
+	}
+	m.lastTuneMsg = fmt.Sprintf("OptimizeSpec(%s): %.1f -> %.1f (%d improvements)",
+		cur.Name, res.InitialScore, res.BestScore, len(res.History)-1)
+	m.runRolloutComparison()
+	m.hotSwapSpec(m.specIdx)
 }
 
 func (m *plannerModel) hotSwapSpec(idx int) {
@@ -485,6 +618,7 @@ func (m plannerModel) Help() []key.Binding {
 	return []key.Binding{
 		demohelp.Key("Next spec", "s", "tab"),
 		demohelp.Key("Eval rollouts", "e"),
+		demohelp.Key("Tune spec", "m"),
 		demohelp.Key("Beacon", "b"),
 		demohelp.Key("Intruder", "i"),
 		demohelp.Key("Replay log", "r"),
@@ -543,6 +677,10 @@ func (m plannerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+		case "m":
+			if !m.replaying {
+				m.optimizeActiveSpec()
+			}
 		case "b":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "beacon"})
@@ -594,15 +732,21 @@ func (m plannerModel) renderView() string {
 			marker, i+1, rk.Name, rk.Result.Score, uint32(rk.Result.WorldHash)))
 	}
 
-	right = append(right, "", "UNIT BLACKBOARDS (actor.Blackboard()):")
+	right = append(right, "", "UNIT BLACKBOARDS & EXECUTION TRACES (TraceActor):")
 	for _, u := range m.world.FindByTag("unit") {
 		bb := u.Blackboard()
-		choice := bb.StringOr("utility_choice", "-")
 		status := bb.StringOr("status", "idle")
 		caps := int(bb.FloatOr("captures", 0))
 		beac := int(bb.FloatOr("beacons", 0))
-		right = append(right, fmt.Sprintf("  Unit #%d: status=%-18s utility=%-18s captures=%d beacons=%d",
-			u.ID, status, choice, caps, beac))
+		traceStr := "-"
+		if tr, ok := ntactor.TraceActor(u); ok && len(tr.ActivePath) > 0 {
+			traceStr = strings.Join(tr.ActivePath, " -> ")
+		}
+		right = append(right, fmt.Sprintf("  Unit #%d: status=%-18s captures=%d beacons=%d  trace=[%s]",
+			u.ID, status, caps, beac, traceStr))
+	}
+	if m.lastTuneMsg != "" {
+		right = append(right, fmt.Sprintf("  Evolutionary Tuner: %s", m.lastTuneMsg))
 	}
 
 	var sb strings.Builder
@@ -638,7 +782,7 @@ func (m plannerModel) renderView() string {
 		sb.WriteByte('\n')
 	}
 
-	sb.WriteString("\nCONTROLS: [s] hot-swap spec • [e] evaluate rollouts & deploy best • [b] beacon • [i] intruder • [r] replay • [space] pause • [q] quit")
+	sb.WriteString("\nCONTROLS: [s] hot-swap spec • [e] evaluate rollouts • [m] evolutionary tune spec • [b] beacon • [i] intruder • [r] replay • [space] pause • [q] quit")
 	return sb.String()
 }
 

@@ -1286,3 +1286,200 @@ func TestDeclarativeSpecCompilationHotSwapAndRollout(t *testing.T) {
 		t.Fatalf("expected utility_hunter to rank #1 with higher score, got %+v", ranked)
 	}
 }
+
+func TestDeclarativeFSMSpecTraceAndOptimize(t *testing.T) {
+	reg := NewStandardRegistry(StandardRegistryConfig{})
+
+	// 1. Validate FSM spec error handling.
+	badFSM := []byte(`{"type":"fsm","states":[{"id":"idle","child":{"type":"action","name":"wander"}}],"transitions":[{"from":"idle","to":"missing","after_seconds":1.0}]}`)
+	if _, err := reg.CompileJSON(badFSM); !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("expected ErrInvalidSpec for unknown transition target state, got %v", err)
+	}
+
+	// 2. Compile and run a declarative FSM spec with wildcard and timed transitions.
+	fsmJSON := `{
+		"type": "fsm",
+		"initial_state": "patrol",
+		"states": [
+			{
+				"id": "patrol",
+				"child": {
+					"type": "action",
+					"name": "patrol_box",
+					"params": {"half_width": 6.0, "half_height": 4.0, "speed": 5.0}
+				}
+			},
+			{
+				"id": "intercept",
+				"child": {
+					"type": "action",
+					"name": "pursue_tag",
+					"params": {
+						"tag": "intruder",
+						"speed": 10.0,
+						"capture_radius": 1.3,
+						"destroy_target": true,
+						"score_key": "captures",
+						"intent": "captured_intruder"
+					}
+				}
+			},
+			{
+				"id": "collect",
+				"child": {
+					"type": "action",
+					"name": "arrive_tag",
+					"params": {
+						"tag": "beacon",
+						"speed": 9.0,
+						"capture_radius": 1.2,
+						"destroy_target": true,
+						"score_key": "beacons",
+						"intent": "collected_beacon"
+					}
+				}
+			}
+		],
+		"transitions": [
+			{
+				"from": "*",
+				"to": "intercept",
+				"condition": {
+					"type": "condition",
+					"name": "tag_within_radius",
+					"params": {"tag": "intruder", "radius": 25.0}
+				}
+			},
+			{
+				"from": "intercept",
+				"to": "collect",
+				"condition": {
+					"type": "invert",
+					"child": {
+						"type": "condition",
+						"name": "tag_within_radius",
+						"params": {"tag": "intruder", "radius": 25.0}
+					}
+				}
+			},
+			{
+				"from": "collect",
+				"to": "patrol",
+				"after_seconds": 0.2,
+				"condition": {
+					"type": "invert",
+					"child": {
+						"type": "condition",
+						"name": "tag_within_radius",
+						"params": {"tag": "beacon", "radius": 25.0}
+					}
+				}
+			}
+		]
+	}`
+
+	bt, err := reg.CompileJSON([]byte(fsmJSON))
+	if err != nil {
+		t.Fatalf("CompileJSON(fsmJSON) failed: %v", err)
+	}
+
+	w := NewWorld(Config{Seed: 7, Perception: NewGridIndex(3.0)})
+	uid := w.Spawn(Actor{Tag: "unit", Position: Vec2(0, 0), Behavior: bt})
+	w.Spawn(Actor{Tag: "intruder", Position: Vec2(3, 0), Behavior: Idle})
+	w.Spawn(Actor{Tag: "beacon", Position: Vec2(-2, 0), Behavior: Idle})
+
+	// Tick 1: wildcard transition patrol -> intercept should fire immediately.
+	w.Tick(0.05, nil)
+	unit := w.ActorByID(uid)
+	if got := unit.Blackboard().StringOr("fsm_state", ""); got != "intercept" {
+		t.Fatalf("expected fsm_state 'intercept' on tick 1, got %q", got)
+	}
+	tr, ok := TraceActor(unit)
+	if !ok || len(tr.Entries) == 0 || tr.Entries[0].FSMState != "intercept" {
+		t.Fatalf("expected ExecutionTrace with FSMState='intercept', got ok=%v trace=%+v", ok, tr)
+	}
+	if len(tr.ActivePath) < 2 || tr.ActivePath[0] != "fsm:intercept" {
+		t.Fatalf("unexpected ActivePath: %+v", tr.ActivePath)
+	}
+
+	// Run until intruder and beacon are both cleared and FSM returns to patrol.
+	for range 80 {
+		w.Tick(0.05, nil)
+	}
+	if unit.Blackboard().FloatOr("captures", 0) != 1 || unit.Blackboard().FloatOr("beacons", 0) != 1 {
+		t.Fatalf("expected FSM unit to capture intruder and collect beacon, got captures=%v beacons=%v",
+			unit.Blackboard().FloatOr("captures", 0), unit.Blackboard().FloatOr("beacons", 0))
+	}
+	if got := unit.Blackboard().StringOr("fsm_state", ""); got != "patrol" {
+		t.Fatalf("expected FSM to transition back to 'patrol' after clearing targets, got %q", got)
+	}
+
+	// 3. Test MutateSpec and OptimizeSpec determinism and score improvement.
+	// Start with a sluggish arrive_tag spec (speed=1.5) that cannot reach all beacons in 50 ticks,
+	// and verify OptimizeSpec deterministically tunes parameters to achieve a higher score.
+	slowSpec := BehaviorSpec{
+		Type: "action",
+		Name: "arrive_tag",
+		Params: map[string]any{
+			"tag":            "beacon",
+			"speed":          1.5,
+			"max_force":      8.0,
+			"capture_radius": 0.8,
+			"destroy_target": true,
+			"score_key":      "beacons",
+		},
+	}
+
+	buildOptWorld := func(seed uint64) *World {
+		ow := NewWorld(Config{Seed: seed})
+		ow.Spawn(Actor{Tag: "unit", Position: Vec2(0, 0), Behavior: Idle})
+		ow.Spawn(Actor{Tag: "beacon", Position: Vec2(4, 0), Behavior: Idle})
+		ow.Spawn(Actor{Tag: "beacon", Position: Vec2(9, 0), Behavior: Idle})
+		return ow
+	}
+
+	optCfg := OptimizeConfig{
+		Rollout: RolloutConfig{
+			BuildWorld:  buildOptWorld,
+			Registry:    reg,
+			Seed:        101,
+			TargetActor: 1,
+			Ticks:       50,
+			DT:          0.05,
+			Score: func(ow *World, _ []IntentSummary) float64 {
+				u := ow.ActorByID(1)
+				var minDist float64
+				for _, b := range ow.FindByTag("beacon") {
+					d := u.Position.Dist(b.Position)
+					if minDist == 0 || d < minDist {
+						minDist = d
+					}
+				}
+				return u.Blackboard().FloatOr("beacons", 0)*20.0 - minDist
+			},
+		},
+		Initial:     slowSpec,
+		Generations: 5,
+		Population:  6,
+		Mutate:      MutateConfig{Registry: reg, Probability: 0.8, Sigma: 0.45},
+		Seed:        2026,
+	}
+
+	opt1, err := OptimizeSpec(optCfg)
+	if err != nil {
+		t.Fatalf("OptimizeSpec failed: %v", err)
+	}
+	opt2, err := OptimizeSpec(optCfg)
+	if err != nil {
+		t.Fatalf("OptimizeSpec (run 2) failed: %v", err)
+	}
+	if opt1.BestScore <= opt1.InitialScore {
+		t.Fatalf("expected OptimizeSpec to improve score above initial %v, got %v", opt1.InitialScore, opt1.BestScore)
+	}
+	if opt1.BestResult.WorldHash != opt2.BestResult.WorldHash || math.Float64bits(opt1.BestScore) != math.Float64bits(opt2.BestScore) {
+		t.Fatalf("expected OptimizeSpec to be bit-deterministic across runs: %+v vs %+v", opt1.BestResult, opt2.BestResult)
+	}
+	if len(opt1.BestResult.Traces) == 0 {
+		t.Fatal("expected RolloutResult.Traces to contain target Actor ExecutionTrace")
+	}
+}

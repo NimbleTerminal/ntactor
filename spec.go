@@ -207,6 +207,7 @@ func (r *BehaviorRegistry) Catalog() RegistryCatalog {
 			"condition",
 			"action",
 			"utility",
+			"fsm",
 		},
 	}
 	if r == nil {
@@ -255,8 +256,24 @@ type UtilityOptionSpec struct {
 	Child          *BehaviorSpec       `json:"child"`
 }
 
+// FSMStateSpec is a declarative state definition inside an "fsm" BehaviorSpec node.
+type FSMStateSpec struct {
+	ID    StateID       `json:"id"`
+	Child *BehaviorSpec `json:"child"`
+}
+
+// FSMTransitionSpec is a declarative conditional edge inside an "fsm" BehaviorSpec node.
+// A transition fires when Condition (if non-nil) evaluates to StatusSuccess and
+// AfterSeconds (if > 0) has elapsed in the active state.
+type FSMTransitionSpec struct {
+	From         StateID       `json:"from"`
+	To           StateID       `json:"to"`
+	Condition    *BehaviorSpec `json:"condition,omitempty"`
+	AfterSeconds float64       `json:"after_seconds,omitempty"`
+}
+
 // BehaviorSpec is a declarative, JSON-serializable AST describing a composite
-// BehaviorTree and/or UtilitySelector built from registered primitives.
+// BehaviorTree, UtilitySelector, and/or FSM built from registered primitives.
 type BehaviorSpec struct {
 	Type              string              `json:"type"`
 	Name              string              `json:"name,omitempty"`
@@ -266,6 +283,9 @@ type BehaviorSpec struct {
 	Child             *BehaviorSpec       `json:"child,omitempty"`
 	Children          []BehaviorSpec      `json:"children,omitempty"`
 	Options           []UtilityOptionSpec `json:"options,omitempty"`
+	InitialState      StateID             `json:"initial_state,omitempty"`
+	States            []FSMStateSpec      `json:"states,omitempty"`
+	Transitions       []FSMTransitionSpec `json:"transitions,omitempty"`
 }
 
 func validateParams(path string, def PrimitiveDef, raw map[string]any) (Params, error) {
@@ -342,6 +362,43 @@ func validateParams(path string, def PrimitiveDef, raw map[string]any) (Params, 
 	return Params{raw: raw}, nil
 }
 
+type tracedBTNode struct {
+	path  string
+	typ   string
+	name  string
+	inner BTNode
+	trace *ExecutionTrace
+}
+
+func (n tracedBTNode) Evaluate(dt float64, self *Actor, world *World) NodeStatus {
+	if n.trace == nil {
+		return n.inner.Evaluate(dt, self, world)
+	}
+	idx := len(n.trace.Entries)
+	n.trace.Entries = append(n.trace.Entries, TraceEntry{
+		Path: n.path,
+		Type: n.typ,
+		Name: n.name,
+	})
+	st := n.inner.Evaluate(dt, self, world)
+	if idx < len(n.trace.Entries) {
+		e := &n.trace.Entries[idx]
+		e.Status = st.String()
+		switch inner := n.inner.(type) {
+		case *UtilitySelectorNode:
+			e.Name = inner.SelectedName()
+			e.UtilityOptions = inner.LastTrace()
+		case *FSM:
+			e.FSMState = inner.Current()
+			e.FSMTimeInState = inner.TimeInState()
+			if self != nil {
+				self.Blackboard().SetString("fsm_state", string(inner.Current()))
+			}
+		}
+	}
+	return st
+}
+
 // ValidateSpec checks that spec conforms to the registry schema, parameter
 // types/ranges, and depth/node limits without allocating runtime nodes.
 func (r *BehaviorRegistry) ValidateSpec(spec BehaviorSpec) error {
@@ -349,17 +406,20 @@ func (r *BehaviorRegistry) ValidateSpec(spec BehaviorSpec) error {
 	return err
 }
 
-// Compile validates spec against r and compiles it into a ready-to-run *BehaviorTree.
+// Compile validates spec against r and compiles it into a ready-to-run *BehaviorTree
+// with per-tick ExecutionTrace recording enabled.
 func (r *BehaviorRegistry) Compile(spec BehaviorSpec) (*BehaviorTree, error) {
 	if r == nil {
 		return nil, fmt.Errorf("%w: nil BehaviorRegistry", ErrInvalidSpec)
 	}
+	bt := &BehaviorTree{}
 	nodeCount := 0
-	root, err := r.compileNode("root", spec, 0, &nodeCount)
+	root, err := r.compileNode("root", spec, 0, &nodeCount, &bt.trace)
 	if err != nil {
 		return nil, err
 	}
-	return NewBehaviorTree(root), nil
+	bt.root = root
+	return bt, nil
 }
 
 // CompileJSON parses data as JSON (rejecting unknown fields and oversized inputs)
@@ -377,13 +437,26 @@ func (r *BehaviorRegistry) CompileJSON(data []byte) (*BehaviorTree, error) {
 	return r.Compile(spec)
 }
 
-func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int, count *int) (BTNode, error) {
+func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int, count *int, trace *ExecutionTrace) (BTNode, error) {
 	if depth > MaxSpecDepth {
 		return nil, fmt.Errorf("%w at %s: exceeds max depth %d", ErrInvalidSpec, path, MaxSpecDepth)
 	}
 	*count++
 	if *count > MaxSpecNodes {
 		return nil, fmt.Errorf("%w at %s: exceeds max nodes %d", ErrInvalidSpec, path, MaxSpecNodes)
+	}
+
+	wrap := func(inner BTNode) BTNode {
+		if trace == nil {
+			return inner
+		}
+		return tracedBTNode{
+			path:  path,
+			typ:   spec.Type,
+			name:  spec.Name,
+			inner: inner,
+			trace: trace,
+		}
 	}
 
 	switch spec.Type {
@@ -393,7 +466,7 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 		}
 		children := make([]BTNode, len(spec.Children))
 		for i, ch := range spec.Children {
-			n, err := r.compileNode(fmt.Sprintf("%s.children[%d]", path, i), ch, depth+1, count)
+			n, err := r.compileNode(fmt.Sprintf("%s.children[%d]", path, i), ch, depth+1, count, trace)
 			if err != nil {
 				return nil, err
 			}
@@ -401,26 +474,26 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 		}
 		switch spec.Type {
 		case "sequence":
-			return Sequence(children...), nil
+			return wrap(Sequence(children...)), nil
 		case "mem_sequence":
-			return MemSequence(children...), nil
+			return wrap(MemSequence(children...)), nil
 		case "selector":
-			return Selector(children...), nil
+			return wrap(Selector(children...)), nil
 		case "mem_selector":
-			return MemSelector(children...), nil
+			return wrap(MemSelector(children...)), nil
 		default:
-			return Parallel(spec.RequiredSuccesses, children...), nil
+			return wrap(Parallel(spec.RequiredSuccesses, children...)), nil
 		}
 
 	case "invert":
 		if spec.Child == nil {
 			return nil, fmt.Errorf("%w at %s: \"invert\" requires a child node", ErrInvalidSpec, path)
 		}
-		ch, err := r.compileNode(path+".child", *spec.Child, depth+1, count)
+		ch, err := r.compileNode(path+".child", *spec.Child, depth+1, count, trace)
 		if err != nil {
 			return nil, err
 		}
-		return Invert(ch), nil
+		return wrap(Invert(ch)), nil
 
 	case "cooldown", "timeout":
 		if spec.Child == nil {
@@ -429,14 +502,14 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 		if spec.Seconds <= 0 || math.IsNaN(spec.Seconds) || math.IsInf(spec.Seconds, 0) {
 			return nil, fmt.Errorf("%w at %s: %q requires positive seconds", ErrInvalidSpec, path, spec.Type)
 		}
-		ch, err := r.compileNode(path+".child", *spec.Child, depth+1, count)
+		ch, err := r.compileNode(path+".child", *spec.Child, depth+1, count, trace)
 		if err != nil {
 			return nil, err
 		}
 		if spec.Type == "cooldown" {
-			return Cooldown(spec.Seconds, ch), nil
+			return wrap(Cooldown(spec.Seconds, ch)), nil
 		}
-		return Timeout(spec.Seconds, ch), nil
+		return wrap(Timeout(spec.Seconds, ch)), nil
 
 	case "condition":
 		reg, ok := r.conditions[spec.Name]
@@ -455,7 +528,7 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 		if err != nil {
 			return nil, fmt.Errorf("%w at %s: %v", ErrInvalidSpec, path, err)
 		}
-		return Condition(fn), nil
+		return wrap(Condition(fn)), nil
 
 	case "action":
 		reg, ok := r.actions[spec.Name]
@@ -474,7 +547,7 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 		if err != nil {
 			return nil, fmt.Errorf("%w at %s: %v", ErrInvalidSpec, path, err)
 		}
-		return node, nil
+		return wrap(node), nil
 
 	case "utility":
 		if len(spec.Options) == 0 {
@@ -489,7 +562,7 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 			if ospec.Child == nil {
 				return nil, fmt.Errorf("%w at %s: utility option %q requires a child node", ErrInvalidSpec, optPath, ospec.Name)
 			}
-			ch, err := r.compileNode(optPath+".child", *ospec.Child, depth+1, count)
+			ch, err := r.compileNode(optPath+".child", *ospec.Child, depth+1, count, trace)
 			if err != nil {
 				return nil, err
 			}
@@ -527,7 +600,73 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 				Node:           ch,
 			}
 		}
-		return UtilitySelector(opts...), nil
+		return wrap(UtilitySelector(opts...)), nil
+
+	case "fsm":
+		if len(spec.States) == 0 {
+			return nil, fmt.Errorf("%w at %s: \"fsm\" requires non-empty states", ErrInvalidSpec, path)
+		}
+		initial := spec.InitialState
+		if initial == "" {
+			initial = spec.States[0].ID
+		}
+		fsm := NewFSM(initial)
+		stateSet := make(map[StateID]bool, len(spec.States))
+		for i, st := range spec.States {
+			stPath := fmt.Sprintf("%s.states[%d]", path, i)
+			if st.ID == "" || st.ID == WildcardState {
+				return nil, fmt.Errorf("%w at %s: state requires a valid non-wildcard id", ErrInvalidSpec, stPath)
+			}
+			if stateSet[st.ID] {
+				return nil, fmt.Errorf("%w at %s: duplicate state id %q", ErrInvalidSpec, stPath, st.ID)
+			}
+			if st.Child == nil {
+				return nil, fmt.Errorf("%w at %s: state %q requires a child node", ErrInvalidSpec, stPath, st.ID)
+			}
+			ch, err := r.compileNode(fmt.Sprintf("%s.states[%s].child", path, st.ID), *st.Child, depth+1, count, trace)
+			if err != nil {
+				return nil, err
+			}
+			stateSet[st.ID] = true
+			fsm.AddNodeState(st.ID, ch)
+		}
+		if !stateSet[initial] {
+			return nil, fmt.Errorf("%w at %s: initial_state %q not found in states", ErrInvalidSpec, path, initial)
+		}
+		for i, tr := range spec.Transitions {
+			trPath := fmt.Sprintf("%s.transitions[%d]", path, i)
+			if tr.From != WildcardState && !stateSet[tr.From] {
+				return nil, fmt.Errorf("%w at %s: unknown transition from state %q", ErrInvalidSpec, trPath, tr.From)
+			}
+			if !stateSet[tr.To] {
+				return nil, fmt.Errorf("%w at %s: unknown transition to state %q", ErrInvalidSpec, trPath, tr.To)
+			}
+			if tr.Condition == nil && tr.AfterSeconds <= 0 {
+				return nil, fmt.Errorf("%w at %s: transition requires condition or positive after_seconds", ErrInvalidSpec, trPath)
+			}
+			if math.IsNaN(tr.AfterSeconds) || math.IsInf(tr.AfterSeconds, 0) || tr.AfterSeconds < 0 {
+				return nil, fmt.Errorf("%w at %s: after_seconds must be non-negative finite", ErrInvalidSpec, trPath)
+			}
+			var condNode BTNode
+			if tr.Condition != nil {
+				var err error
+				condNode, err = r.compileNode(trPath+".condition", *tr.Condition, depth+1, count, nil)
+				if err != nil {
+					return nil, err
+				}
+			}
+			afterSec := tr.AfterSeconds
+			fsm.AddTransition(tr.From, tr.To, func(self *Actor, world *World) bool {
+				if afterSec > 0 && fsm.TimeInState() < afterSec {
+					return false
+				}
+				if condNode != nil {
+					return condNode.Evaluate(0, self, world) == StatusSuccess
+				}
+				return true
+			})
+		}
+		return wrap(fsm), nil
 
 	default:
 		return nil, fmt.Errorf("%w at %s: unknown node type %q", ErrInvalidSpec, path, spec.Type)
@@ -1175,12 +1314,13 @@ type RolloutConfig struct {
 
 // RolloutResult holds the deterministic outcome of EvaluateRollout.
 type RolloutResult struct {
-	Ticks        int             `json:"ticks"`
-	SimTime      float64         `json:"sim_time"`
-	WorldHash    uint64          `json:"world_hash"`
-	Score        float64         `json:"score"`
-	IntentCounts []IntentSummary `json:"intent_counts,omitempty"`
-	Snapshot     WorldSnapshot   `json:"snapshot"`
+	Ticks        int              `json:"ticks"`
+	SimTime      float64          `json:"sim_time"`
+	WorldHash    uint64           `json:"world_hash"`
+	Score        float64          `json:"score"`
+	IntentCounts []IntentSummary  `json:"intent_counts,omitempty"`
+	Traces       []ExecutionTrace `json:"traces,omitempty"`
+	Snapshot     WorldSnapshot    `json:"snapshot"`
 }
 
 // EvaluateRollout compiles cfg.Spec, installs it on the target Actor(s) in a
@@ -1245,6 +1385,17 @@ func EvaluateRollout(cfg RolloutConfig) (RolloutResult, error) {
 		return strings.Compare(a.Kind, b.Kind)
 	})
 
+	var traces []ExecutionTrace
+	for _, a := range w.Actors() {
+		match := (cfg.TargetActor != InvalidActorID && a.ID == cfg.TargetActor) ||
+			(cfg.TargetTag != "" && a.Tag == cfg.TargetTag)
+		if match {
+			if tr, ok := TraceActor(a); ok {
+				traces = append(traces, tr)
+			}
+		}
+	}
+
 	score := 0.0
 	if cfg.Score != nil {
 		score = cfg.Score(w, summaries)
@@ -1255,6 +1406,7 @@ func EvaluateRollout(cfg RolloutConfig) (RolloutResult, error) {
 		WorldHash:    w.Hash(),
 		Score:        score,
 		IntentCounts: summaries,
+		Traces:       traces,
 		Snapshot:     w.Snapshot(),
 	}, nil
 }
@@ -1301,4 +1453,335 @@ func CompareRollouts(baseCfg RolloutConfig, candidates map[string]BehaviorSpec) 
 		return strings.Compare(a.Name, b.Name)
 	})
 	return out, nil
+}
+
+func cloneParamsMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// CloneSpec returns a deep copy of spec so parameter mutations never alias
+// slices, pointers, or parameter maps.
+func CloneSpec(spec BehaviorSpec) BehaviorSpec {
+	out := spec
+	out.Params = cloneParamsMap(spec.Params)
+	if spec.Child != nil {
+		ch := CloneSpec(*spec.Child)
+		out.Child = &ch
+	}
+	if len(spec.Children) > 0 {
+		out.Children = make([]BehaviorSpec, len(spec.Children))
+		for i, ch := range spec.Children {
+			out.Children[i] = CloneSpec(ch)
+		}
+	}
+	if len(spec.Options) > 0 {
+		out.Options = make([]UtilityOptionSpec, len(spec.Options))
+		for i, opt := range spec.Options {
+			cp := opt
+			if opt.Child != nil {
+				ch := CloneSpec(*opt.Child)
+				cp.Child = &ch
+			}
+			if len(opt.Considerations) > 0 {
+				cp.Considerations = make([]ConsiderationSpec, len(opt.Considerations))
+				for j, cs := range opt.Considerations {
+					cp.Considerations[j] = ConsiderationSpec{
+						Name:   cs.Name,
+						Params: cloneParamsMap(cs.Params),
+						Min:    cs.Min,
+						Max:    cs.Max,
+						Curve:  cs.Curve,
+					}
+				}
+			}
+			out.Options[i] = cp
+		}
+	}
+	if len(spec.States) > 0 {
+		out.States = make([]FSMStateSpec, len(spec.States))
+		for i, st := range spec.States {
+			cp := st
+			if st.Child != nil {
+				ch := CloneSpec(*st.Child)
+				cp.Child = &ch
+			}
+			out.States[i] = cp
+		}
+	}
+	if len(spec.Transitions) > 0 {
+		out.Transitions = make([]FSMTransitionSpec, len(spec.Transitions))
+		for i, tr := range spec.Transitions {
+			cp := tr
+			if tr.Condition != nil {
+				cond := CloneSpec(*tr.Condition)
+				cp.Condition = &cond
+			}
+			out.Transitions[i] = cp
+		}
+	}
+	return out
+}
+
+// MutateConfig controls how MutateSpec perturbs numeric parameters in a BehaviorSpec.
+type MutateConfig struct {
+	// Registry provides parameter bounds (Min, Max, Default) for registered primitives.
+	// If nil, NewStandardRegistry(StandardRegistryConfig{}) is used.
+	Registry *BehaviorRegistry
+	// Probability is the chance in (0, 1] that each tunable parameter is perturbed (default 0.5).
+	Probability float64
+	// Sigma is the relative perturbation magnitude as a fraction of the current value (default 0.25).
+	Sigma float64
+}
+
+func roundCent(v float64) float64 {
+	return math.Round(v*100.0) / 100.0
+}
+
+func perturbFloatBounds(rng *RNG, cur, sigma float64, minB, maxB *float64) float64 {
+	scale := math.Max(math.Abs(cur), 0.5)
+	next := cur + rng.FloatRange(-1.0, 1.0)*sigma*scale
+	if minB != nil && next < *minB {
+		next = *minB
+	}
+	if maxB != nil && next > *maxB {
+		next = *maxB
+	}
+	next = roundCent(next)
+	if minB != nil && next < *minB {
+		next = *minB
+	}
+	if maxB != nil && next > *maxB {
+		next = *maxB
+	}
+	return next
+}
+
+// MutateSpec returns a deterministically perturbed deep copy of spec using rng.
+// Numeric parameters on actions, conditions, considerations, utility option weights,
+// decorator durations, and FSM transition timers are perturbed within valid registry bounds.
+func MutateSpec(rng *RNG, spec BehaviorSpec, cfg MutateConfig) BehaviorSpec {
+	out := CloneSpec(spec)
+	if rng == nil {
+		return out
+	}
+	reg := cfg.Registry
+	if reg == nil {
+		reg = NewStandardRegistry(StandardRegistryConfig{})
+	}
+	prob := cfg.Probability
+	if prob <= 0 || prob > 1 {
+		prob = 0.5
+	}
+	sigma := cfg.Sigma
+	if sigma <= 0 {
+		sigma = 0.25
+	}
+
+	var slots []func()
+	collectParamsSlots := func(def PrimitiveDef, paramsPtr *map[string]any) {
+		for _, ps := range def.Params {
+			if ps.Type != "float" && ps.Type != "int" {
+				continue
+			}
+			psCopy := ps
+			pMapPtr := paramsPtr
+			slots = append(slots, func() {
+				if *pMapPtr == nil {
+					*pMapPtr = make(map[string]any)
+				}
+				p := Params{raw: *pMapPtr}
+				defVal := 1.0
+				switch d := psCopy.Default.(type) {
+				case float64:
+					defVal = d
+				case int:
+					defVal = float64(d)
+				}
+				cur := p.Float(psCopy.Name, defVal)
+				next := perturbFloatBounds(rng, cur, sigma, psCopy.Min, psCopy.Max)
+				if psCopy.Type == "int" {
+					(*pMapPtr)[psCopy.Name] = int(math.Round(next))
+				} else {
+					(*pMapPtr)[psCopy.Name] = next
+				}
+			})
+		}
+	}
+
+	var walk func(node *BehaviorSpec)
+	walk = func(node *BehaviorSpec) {
+		if node == nil {
+			return
+		}
+		switch node.Type {
+		case "condition":
+			if rc, ok := reg.conditions[node.Name]; ok {
+				collectParamsSlots(rc.def, &node.Params)
+			}
+		case "action":
+			if ra, ok := reg.actions[node.Name]; ok {
+				collectParamsSlots(ra.def, &node.Params)
+			}
+		case "cooldown", "timeout":
+			if node.Seconds > 0 {
+				secPtr := &node.Seconds
+				slots = append(slots, func() {
+					minS, maxS := 0.05, 60.0
+					*secPtr = perturbFloatBounds(rng, *secPtr, sigma, &minS, &maxS)
+				})
+			}
+		case "utility":
+			for i := range node.Options {
+				optPtr := &node.Options[i]
+				slots = append(slots, func() {
+					curW := optPtr.Weight
+					if curW <= 0 {
+						curW = 1.0
+					}
+					minW, maxW := 0.05, 10.0
+					optPtr.Weight = perturbFloatBounds(rng, curW, sigma, &minW, &maxW)
+				})
+				for j := range optPtr.Considerations {
+					csPtr := &optPtr.Considerations[j]
+					if rc, ok := reg.considerations[csPtr.Name]; ok {
+						collectParamsSlots(rc.def, &csPtr.Params)
+					}
+				}
+				walk(optPtr.Child)
+			}
+		case "fsm":
+			for i := range node.States {
+				walk(node.States[i].Child)
+			}
+			for i := range node.Transitions {
+				trPtr := &node.Transitions[i]
+				if trPtr.AfterSeconds > 0 {
+					afterPtr := &trPtr.AfterSeconds
+					slots = append(slots, func() {
+						minS, maxS := 0.05, 60.0
+						*afterPtr = perturbFloatBounds(rng, *afterPtr, sigma, &minS, &maxS)
+					})
+				}
+				walk(trPtr.Condition)
+			}
+		}
+		walk(node.Child)
+		for i := range node.Children {
+			walk(&node.Children[i])
+		}
+	}
+
+	walk(&out)
+	if len(slots) == 0 {
+		return out
+	}
+
+	mutated := 0
+	for _, fn := range slots {
+		if rng.Float64() < prob {
+			fn()
+			mutated++
+		}
+	}
+	if mutated == 0 {
+		idx := rng.IntRange(0, len(slots)-1)
+		slots[idx]()
+	}
+	return out
+}
+
+// OptimizeConfig configures deterministic evolutionary parameter tuning of a
+// seed BehaviorSpec over headless rollouts.
+type OptimizeConfig struct {
+	// Rollout is the base RolloutConfig used to evaluate each candidate.
+	Rollout RolloutConfig
+	// Initial is the starting BehaviorSpec (generation 0 baseline).
+	Initial BehaviorSpec
+	// Generations is the number of evolutionary generations to run (default 4 if <= 0).
+	Generations int
+	// Population is the number of mutated candidates evaluated per generation (default 6 if <= 0).
+	Population int
+	// Mutate controls parameter perturbation.
+	Mutate MutateConfig
+	// Seed seeds the evolutionary search PRNG (defaults to Rollout.Seed if 0).
+	Seed uint64
+}
+
+// OptimizeResult holds the deterministic outcome of OptimizeSpec across generations.
+type OptimizeResult struct {
+	InitialScore float64           `json:"initial_score"`
+	BestScore    float64           `json:"best_score"`
+	BestSpec     BehaviorSpec      `json:"best_spec"`
+	BestResult   RolloutResult     `json:"best_result"`
+	History      []RankedCandidate `json:"history"`
+}
+
+// OptimizeSpec runs a deterministic (1 + lambda) evolutionary strategy using
+// MutateSpec and EvaluateRollout to tune spec parameters for maximum Score.
+func OptimizeSpec(cfg OptimizeConfig) (OptimizeResult, error) {
+	baseCfg := cfg.Rollout
+	baseCfg.Spec = CloneSpec(cfg.Initial)
+	initRes, err := EvaluateRollout(baseCfg)
+	if err != nil {
+		return OptimizeResult{}, err
+	}
+
+	gens := cfg.Generations
+	if gens <= 0 {
+		gens = 4
+	}
+	pop := cfg.Population
+	if pop <= 0 {
+		pop = 6
+	}
+	seed := cfg.Seed
+	if seed == 0 {
+		seed = cfg.Rollout.Seed
+		if seed == 0 {
+			seed = 42
+		}
+	}
+	mutCfg := cfg.Mutate
+	if mutCfg.Registry == nil {
+		mutCfg.Registry = cfg.Rollout.Registry
+	}
+
+	rng := NewRNG(seed)
+	bestSpec := CloneSpec(cfg.Initial)
+	bestRes := initRes
+	history := []RankedCandidate{
+		{Name: "gen0_initial", Spec: CloneSpec(bestSpec), Result: bestRes},
+	}
+
+	for g := 1; g <= gens; g++ {
+		candidates := make(map[string]BehaviorSpec, pop)
+		for i := 0; i < pop; i++ {
+			name := fmt.Sprintf("gen%d_cand%d", g, i+1)
+			candidates[name] = MutateSpec(rng, bestSpec, mutCfg)
+		}
+		ranked, err := CompareRollouts(cfg.Rollout, candidates)
+		if err != nil {
+			return OptimizeResult{}, err
+		}
+		if len(ranked) > 0 && ranked[0].Result.Score > bestRes.Score {
+			bestSpec = CloneSpec(ranked[0].Spec)
+			bestRes = ranked[0].Result
+			history = append(history, ranked[0])
+		}
+	}
+
+	return OptimizeResult{
+		InitialScore: initRes.Score,
+		BestScore:    bestRes.Score,
+		BestSpec:     bestSpec,
+		BestResult:   bestRes,
+		History:      history,
+	}, nil
 }

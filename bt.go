@@ -33,10 +33,32 @@ type BTNode interface {
 	Evaluate(dt float64, self *Actor, world *World) NodeStatus
 }
 
+// TraceEntry records the evaluation of a single node during a BehaviorTree tick.
+type TraceEntry struct {
+	Path           string               `json:"path"`
+	Type           string               `json:"type"`
+	Name           string               `json:"name,omitempty"`
+	Status         string               `json:"status"`
+	FSMState       StateID              `json:"fsm_state,omitempty"`
+	FSMTimeInState float64              `json:"fsm_time_in_state,omitempty"`
+	UtilityOptions []UtilityOptionTrace `json:"utility_options,omitempty"`
+}
+
+// ExecutionTrace captures the per-tick evaluation trace of a BehaviorTree.
+type ExecutionTrace struct {
+	Tick       uint64       `json:"tick"`
+	SimTime    float64      `json:"sim_time"`
+	ActorID    ActorID      `json:"actor_id"`
+	RootStatus string       `json:"root_status"`
+	ActivePath []string     `json:"active_path,omitempty"`
+	Entries    []TraceEntry `json:"entries,omitempty"`
+}
+
 // BehaviorTree wraps a root BTNode and adapts it to the Behavior interface.
 type BehaviorTree struct {
 	root       BTNode
 	lastStatus NodeStatus
+	trace      ExecutionTrace
 }
 
 // NewBehaviorTree constructs a BehaviorTree with the given root node.
@@ -49,13 +71,95 @@ func (t *BehaviorTree) LastStatus() NodeStatus {
 	return t.lastStatus
 }
 
+// LastTrace returns a copy of the ExecutionTrace recorded on the most recent Tick.
+func (t *BehaviorTree) LastTrace() ExecutionTrace {
+	if t == nil {
+		return ExecutionTrace{}
+	}
+	out := t.trace
+	if len(t.trace.ActivePath) > 0 {
+		out.ActivePath = make([]string, len(t.trace.ActivePath))
+		copy(out.ActivePath, t.trace.ActivePath)
+	}
+	if len(t.trace.Entries) > 0 {
+		out.Entries = make([]TraceEntry, len(t.trace.Entries))
+		copy(out.Entries, t.trace.Entries)
+	}
+	return out
+}
+
+// TraceActor extracts the most recent ExecutionTrace from a's Behavior if a is
+// driven by a *BehaviorTree.
+func TraceActor(a *Actor) (ExecutionTrace, bool) {
+	if a == nil || a.Behavior == nil {
+		return ExecutionTrace{}, false
+	}
+	bt, ok := a.Behavior.(*BehaviorTree)
+	if !ok || bt == nil {
+		return ExecutionTrace{}, false
+	}
+	return bt.LastTrace(), true
+}
+
 // Tick evaluates the root node for the current simulation tick.
 func (t *BehaviorTree) Tick(dt float64, self *Actor, world *World) {
+	t.trace.Entries = t.trace.Entries[:0]
+	t.trace.ActivePath = t.trace.ActivePath[:0]
+	if world != nil {
+		t.trace.Tick = world.TickCount()
+		t.trace.SimTime = world.SimTime()
+	}
+	if self != nil {
+		t.trace.ActorID = self.ID
+	}
 	if t.root == nil {
 		t.lastStatus = StatusFailure
+		t.trace.RootStatus = StatusFailure.String()
 		return
 	}
 	t.lastStatus = t.root.Evaluate(dt, self, world)
+	t.trace.RootStatus = t.lastStatus.String()
+	if len(t.trace.Entries) == 0 {
+		switch r := t.root.(type) {
+		case *UtilitySelectorNode:
+			t.trace.Entries = append(t.trace.Entries, TraceEntry{
+				Path:           "root",
+				Type:           "utility",
+				Name:           r.SelectedName(),
+				Status:         t.lastStatus.String(),
+				UtilityOptions: r.LastTrace(),
+			})
+		case *FSM:
+			t.trace.Entries = append(t.trace.Entries, TraceEntry{
+				Path:           "root",
+				Type:           "fsm",
+				Status:         t.lastStatus.String(),
+				FSMState:       r.Current(),
+				FSMTimeInState: r.TimeInState(),
+			})
+		default:
+			t.trace.Entries = append(t.trace.Entries, TraceEntry{
+				Path:   "root",
+				Type:   "bt",
+				Status: t.lastStatus.String(),
+			})
+		}
+	}
+	for _, e := range t.trace.Entries {
+		if e.Status == StatusFailure.String() {
+			continue
+		}
+		switch {
+		case e.Type == "utility" && e.Name != "":
+			t.trace.ActivePath = append(t.trace.ActivePath, "utility->"+e.Name)
+		case e.Type == "fsm" && e.FSMState != "":
+			t.trace.ActivePath = append(t.trace.ActivePath, "fsm:"+string(e.FSMState))
+		case e.Name != "":
+			t.trace.ActivePath = append(t.trace.ActivePath, e.Type+":"+e.Name)
+		default:
+			t.trace.ActivePath = append(t.trace.ActivePath, e.Type)
+		}
+	}
 }
 
 type sequenceNode struct {

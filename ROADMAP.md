@@ -3,19 +3,6 @@
 What is open, roughly in priority order within each section, followed by what
 is already implemented.
 
-## Next: Declarative Behavior Synthesis & Planner Extensions
-
-- [ ] **Declarative `FSM` specs in `BehaviorSpec`**: compile JSON state machines
-  (`states`, `transitions`, `wildcard` interrupts) alongside `BehaviorTree` and
-  `UtilitySelector` specs in `BehaviorRegistry`.
-- [ ] **Parameterized `BehaviorSpec` mutation / evolutionary search**:
-  deterministic parameter perturbation (`MutateSpec(rng, spec)`) paired with
-  `CompareRollouts` to auto-tune speeds, radii, and utility weights over
-  headless rollouts.
-- [ ] **Execution trace recording on `BehaviorTree` / `UtilitySelector`**:
-  per-tick active node path and consideration score breakdown for visual
-  behavior debugging and planner feedback loops.
-
 ## Next: Navigation, Formations & Avoidance
 
 - [ ] **Predictive / reciprocal collision avoidance (`SteerAvoidActors`)**:
@@ -34,6 +21,14 @@ is already implemented.
   `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs/PNGs for the README.
 
 ## Done
+
+- [x] **Declarative `FSM` specs, `ExecutionTrace`, and Evolutionary Spec Tuning (`fsm.go`, `bt.go`, `utility.go`, `spec.go`, `examples/planner`)**:
+  declarative `"fsm"` `BehaviorSpec` (`FSMStateSpec`, `FSMTransitionSpec` with
+  `WildcardState` `"*"` and `after_seconds` timers), `FSM.AddNodeState` /
+  `FSM.Evaluate`, per-tick `ExecutionTrace` (`TraceActor`,
+  `BehaviorTree.LastTrace`, `UtilitySelectorNode.LastTrace`), and deterministic
+  parameter perturbation + evolutionary tuning (`CloneSpec`, `MutateSpec`,
+  `OptimizeSpec`).
 
 - [x] **Declarative Behavior Synthesis, Utility AI, Blackboard & Rollouts (`blackboard.go`, `utility.go`, `spec.go`, `examples/planner`)**:
   deterministic sorted `Blackboard` on `World` and `Actor` (folded into
