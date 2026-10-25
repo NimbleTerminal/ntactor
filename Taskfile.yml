@@ -150,30 +150,21 @@ tasks:
 
   test-wasm:
     desc: 'Run js/wasm tests via Node and go_js_wasm_exec'
-    env:
-      GOOS: 'js'
-      GOARCH: 'wasm'
-      GOWORK: '{{.ROOT_DIR}}/wasm.work'
     cmds:
       - |
         EXEC="$(go env GOROOT)/lib/wasm/go_js_wasm_exec"
         if [ ! -x "$EXEC" ]; then
           EXEC="$(go env GOROOT)/misc/wasm/go_js_wasm_exec"
         fi
-        go test -exec="$EXEC" ./...
-        go -C examples test -exec="$EXEC" ./...
+        GOWORK="{{.ROOT_DIR}}/wasm.work" GOOS=js GOARCH=wasm go test -exec="$EXEC" ./...
+        GOWORK="{{.ROOT_DIR}}/wasm.work" GOOS=js GOARCH=wasm go -C examples test -exec="$EXEC" ./...
 
   build-wasm:
     desc: 'Compile all interactive example WASM binaries into web/demos/'
-    env:
-      GOOS: 'js'
-      GOARCH: 'wasm'
-      GOWORK: '{{.ROOT_DIR}}/wasm.work'
-      CGO_ENABLED: '0'
     cmds:
       - mkdir -p web/demos
       - for: [arena, flock, nav, scene3d, planner]
-        cmd: go -C examples build -o ../web/demos/{{.ITEM}}.wasm ./{{.ITEM}}
+        cmd: GOWORK="{{.ROOT_DIR}}/wasm.work" GOOS=js GOARCH=wasm CGO_ENABLED=0 go -C examples build -o ../web/demos/{{.ITEM}}.wasm ./{{.ITEM}}
 
   build-wasm-site:
     desc: 'Assemble the full WASM demo gallery into ./web for local serving or GitHub Pages'

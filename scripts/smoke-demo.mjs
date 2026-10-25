@@ -76,7 +76,7 @@ try {
   } else if (demo === 'nav') {
     await send(' ', 'Nav [PAUSED]:');
     await send('s', 'smooth=false');
-    await send('c', 'actors=16');
+    await send('c', 'actors=18');
   } else if (demo === 'scene3d') {
     await send(' ', 'Scene3D [PAUSED]:');
     await send('b', 'beacons=2');
@@ -84,8 +84,9 @@ try {
     await send('f', 'boids=56');
   } else if (demo === 'planner') {
     await send(' ', 'Planner [PAUSED]:');
-    await send('s', 'spec=astar_collector');
-    await send('e', 'spec=utility_hunter');
+    await send('s', 'spec=fsm_sentinel');
+    await send('s', 'spec=goap_operative');
+    await send('e', 'spec=fsm_sentinel');
   }
 
   bubbletea_write(quit.keys[quit.preferred].key);
