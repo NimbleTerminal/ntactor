@@ -3,12 +3,13 @@
 What is open, roughly in priority order within each section, followed by what
 is already implemented.
 
-## Next: Recordings
-
-- [ ] **`ntrecord` demo tapes**: add deterministic `.tape` scripts to record
-  `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs/PNGs for the README.
-
 ## Done
+
+- [x] **`ntrecord` demo tapes & screenshots (`tapes/`, `docs/images/`, `Taskfile.yml`)**:
+  `.tape` scripts (`arena.tape`, `flock.tape`, `nav.tape`, `scene3d.tape`,
+  `planner.tape`, `common.tape`) and `task tapes` target recording GIFs and
+  README screenshots (including Kitty-graphics 3D WebGPU rendering for
+  `scene3d`).
 
 - [x] **Predictive Collision Avoidance, Squad Formations, and 3D Navigation (`steering.go`, `nav.go`, `spec.go`)**:
   reciprocal time-to-closest-approach avoidance (`SteerAvoidActors`), squad

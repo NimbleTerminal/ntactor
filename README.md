@@ -12,6 +12,16 @@
 
 [**Try out the live WASM demo.**](https://nimbleterminal.github.io/ntactor)
 
+<p>
+  <a href="https://nimbleterminal.github.io/ntactor/?demo=scene3d"><img src="docs/images/scene3d.png" alt="ntactor x nt3d 3D Arena with FSM Cone Guards, A* Sphere Scouts, Torus Beacons, and 3D Boids Point Cloud" width="49%"></a>
+  <a href="https://nimbleterminal.github.io/ntactor/?demo=planner"><img src="docs/images/planner.png" alt="ntactor Declarative Behavior Planner with JSON BehaviorSpec, Rollout Ranking, Blackboards, and Execution Traces" width="49%"></a>
+</p>
+<p>
+  <a href="https://nimbleterminal.github.io/ntactor/?demo=arena"><img src="docs/images/arena.png" alt="ntactor Tactical Arena" width="32%"></a>
+  <a href="https://nimbleterminal.github.io/ntactor/?demo=nav"><img src="docs/images/nav.png" alt="ntactor A* and FlowField Navigation" width="32%"></a>
+  <a href="https://nimbleterminal.github.io/ntactor/?demo=flock"><img src="docs/images/flock.png" alt="ntactor Reynolds Boids Murmuration" width="32%"></a>
+</p>
+
 Because the root module has **zero external dependencies** (Go standard library only), **no CGO**, and **never calls wall-clock APIs (`time.Now`) or global random generators**, every simulation run is 100% bit-deterministic across native (`linux`, `darwin`, `windows`, `freebsd`) and browser (`js/wasm`) targets.
 
 Actors and the `World` own only identity, local state, abstract 2D/3D coordinates, and behavior. They know nothing about meshes, scene-graph nodes, terminal glyphs, or pixels. The same simulation drives:
@@ -85,8 +95,9 @@ Building requires Go 1.26.8 or newer. See [`examples/README.md`](./examples/READ
 - **`task run-flock`** ([`examples/flock`](./examples/flock/main.go)) — Reynolds Boids murmuration (`FlockBehavior` + `GridIndex`) with dynamic attractors (`a`) and predators (`p`), adapted simultaneously to a contiguous 3D `PointCloudAdapter` slice and a terminal density grid.
 - **`task run-nav`** ([`examples/nav`](./examples/nav/main.go)) — interactive A\* pathfinding (`FindWorldPath`), supercover line-of-sight path smoothing (`SmoothPath`), weighted mud terrain (`░`), interactive wall toggling (`w`) and goal relocation (`g`), and Dijkstra `FlowField` crowd steering (`c`).
 - **`task run-scene3d`** ([`examples/scene3d`](./examples/scene3d/main.go)) — interactive 3D [`nt3d`](https://github.com/NimbleTerminal/nt3d) arena driving 3D cone guards (`FSM`), 3D sphere scouts (`BehaviorTree` + A\* path lines around 3D cylindrical pillars), spinning 3D torus beacons, and a 3D Boids murmuration point cloud (`SetNodeGeometry` / `PointStyle`) with mouse camera orbiting, ray-cast floor picking, and WebGPU/Software/Wireframe rendering.
-- **`task run-planner`** ([`examples/planner`](./examples/planner/main.go)) — declarative JSON `BehaviorSpec` compiler (`BehaviorRegistry`), `UtilitySelector` AI, per-Actor `Blackboard` inspector, counterfactual rollout ranking (`CompareRollouts`), and `EventLog` behavior hot-swapping.
+- **`task run-planner`** ([`examples/planner`](./examples/planner/main.go)) — declarative JSON `BehaviorSpec` compiler (`BehaviorRegistry`) supporting `BehaviorTree`, `UtilitySelector`, and `FSM` specs, per-Actor `Blackboard` and `ExecutionTrace` inspector (`TraceActor`), counterfactual rollout ranking (`CompareRollouts`), evolutionary parameter tuning (`OptimizeSpec`), and `EventLog` behavior hot-swapping.
 - **`task run-replay`** ([`examples/replay`](./examples/replay/main.go)) — CLI verification demo recording a live simulation into an `EventLog`, round-tripping through JSON/binary codecs, replaying via `HistoricalDriver`, and asserting identical `World.Hash()` digests.
+- **`task tapes`** ([`tapes/`](./tapes)) — records `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs (`dist/tapes/*.gif`) and README screenshots (`docs/images/*.png`) using [`ntrecord`](https://github.com/NimbleTerminal/ntrecord).
 
 All five interactive examples compile to WebAssembly and run in the browser demo gallery via [`booba`](https://github.com/NimbleMarkets/go-booba), publishing their key bindings as interactive OSC 7501 action buttons above the terminal:
 

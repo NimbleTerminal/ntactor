@@ -132,6 +132,22 @@ tasks:
     cmds:
       - go -C examples run -mod=readonly ./planner {{.CLI_ARGS}}
 
+  tapes:
+    aliases: [record-demo]
+    desc: 'Record the interactive demos with ntrecord into dist/tapes/ and docs/images/'
+    vars:
+      NAMES: '{{if .CLI_ARGS}}{{.CLI_ARGS}}{{else}}arena flock nav scene3d planner{{end}}'
+    preconditions:
+      - sh: command -v ntrecord
+        msg: 'Install ntrecord (brew install --cask nimbleterminal/tap/ntrecord).'
+    cmds:
+      - task: build-examples
+      - mkdir -p dist/tapes docs/images
+      - |
+        for name in {{.NAMES}}; do
+          ntrecord validate tapes/$name.tape && ntrecord tapes/$name.tape || exit 1
+        done
+
   test-wasm:
     desc: 'Run js/wasm tests via Node and go_js_wasm_exec'
     env:
