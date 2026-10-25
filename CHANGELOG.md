@@ -1,21 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.1.0 (2026-10-25)
 
-Initial implementation of `ntactor`, a deterministic, renderer-agnostic Go library for classical game and simulation actors.
+Initial release of `ntactor`, a deterministic, renderer-agnostic Go library for game and simulation Actors.
 
-- `Actor`, `ActorID`, `Behavior`, `BehaviorFunc`, `IdleBehavior`, `Intent`, and `Event`.
-- `World` with a single simulation clock (`SimTime`), deterministic `ActorID` ordering, allocation-light `Tick`, `World.Hash()` FNV-1a state digest, `World.Snapshot()` / `World.SnapshotJSON()`, lifecycle management (`Spawn`, `Destroy`, `Actor`, `ActorByID`, `Actors`), and perception (`ActorsWithinRadius`, `Neighbors`, `ActorsWithinCone`, `HasLineOfSight`, `NearestActor`, `FindByTag`, pluggable `SpatialIndex`).
-- `Blackboard` (`Actor.Blackboard()`, `World.Blackboard()`) sorted, deterministic key-value memory store (`Float`, `Int`, `Bool`, `String`, `Vec3`, `ActorID`) folded into `World.Hash()`.
-- `GridIndex` (`NewGridIndex`) uniform 2D/3D spatial hash grid accelerating radius and cone perception while preserving deterministic `ActorID` ordering.
-- Seeded deterministic `RNG` (`xoshiro256**` seeded via SplitMix64) and pluggable `RandomSource`, plus per-actor derived streams (`World.ActorRNG`).
-- `FSM` (Finite State Machine with `OnEnter`, `OnTick`, `OnExit`, `AddNodeState`, `Evaluate`, and ordered conditional transitions including `WildcardState`).
-- `BehaviorTree` with stateless and stateful nodes (`Sequence`, `MemSequence`, `Selector`, `MemSelector`, `Parallel`, `Condition`, `Action`, `Invert`, `Cooldown`, `Timeout`) and per-tick `ExecutionTrace` (`LastTrace`, `TraceActor`).
-- `UtilitySelector` (`UtilityOption`, `Consideration`, `ResponseCurve`, `ScoreConsiderations`, `LastTrace`) for classical Utility AI scoring with normalized response curves (`linear`, `quadratic`, `sqrt`, `logistic`, `step`).
-- `GOAPNode` (`GOAPFact`, `GOAPAction`, `GOAPGoal`, `PlanGOAP`, `NewGOAP`) for deterministic STRIPS / F.E.A.R.-style Goal-Oriented Action Planning over `Blackboard` preconditions and effects.
-- `InfluenceMap` (`NewInfluenceMap`, `NewInfluenceMapFromGrid`, `StampRadius`, `StampRadiusWithLOS`, `Step`, `StepWithWalls`, `GradientWorld`, `SteerInfluence`, `ApplyCostToGridMap`) for deterministic 2D threat maps, stigmergic pheromone trails, and threat-aware `GridMap` A\* / `FlowField` pathfinding.
-- `BehaviorRegistry` & declarative `BehaviorSpec` (`NewStandardRegistry`, `CatalogJSON`, `Compile`, `CompileJSON`, `RegisterSwapHandler`, `EvaluateRollout`, `CompareRollouts`, `CloneSpec`, `MutateSpec`, `OptimizeSpec`) for compiling, hot-swapping, evaluating, and evolutionarily tuning JSON behavior trees, utility selectors, finite state machines, and GOAP planners.
-- Abstract `Vec3`/`Vec2` math, classical steering, predictive/reciprocal actor collision avoidance, squad formations, and Reynolds Boids flocking (`SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`, `SteerSeparation`, `SteerAlignment`, `SteerCohesion`, `SteerAvoidCircles`, `SteerAvoidActors`, `FormationKind`, `FormationOffsets`, `FormationWorldPosition`, `FollowLeaderBehavior`, `FlockBehavior`, `PatrolBehavior`, `WanderBehavior`).
-- Deterministic 2D and 3D navigation and pathfinding (`NavGraph`, `NodeID`, `FindPathNodes`, `FindPath`, `GridMap` with weighted terrain and corner-clipping prevention, supercover `GridMap.HasLineOfSight`, string-pulling `SmoothPath`, `FindWorldPath`, `FollowPathBehavior`, `FlowField`, `FlowFieldBehavior`, 3D `WaypointGraph`, and 3D `VoxelGrid`).
-- `LiveDriver`, `HistoricalDriver`, `Frame`, `EventLog`, and bounded JSON/binary `EventLog` codecs (`EncodeEventLogJSON`, `DecodeEventLogJSON`, `MarshalEventLogBinary`, `UnmarshalEventLogBinary`).
-- Standalone `examples` module (`examples/replay`, `examples/arena`, `examples/flock`, `examples/nav`, `examples/scene3d`, `examples/planner`) and `booba` WASM browser demo gallery (`web/`).
+- **Core simulation**: `World`, `Actor`, `Behavior`, `Intent`, `Event`, `Blackboard`, seeded `RNG` (`xoshiro256**`), 2D/3D `GridIndex` spatial queries, and `World.Hash()` state digests.
+- **Decision making**: Finite State Machines (`FSM`), Behavior Trees (`BehaviorTree`), Utility AI (`UtilitySelector`, `ResponseCurve`), and Goal-Oriented Action Planning (`GOAPNode`, `PlanGOAP`).
+- **Declarative behaviors**: JSON `BehaviorSpec` and `BehaviorRegistry` (`CompileJSON`, `CatalogJSON`, `TraceActor`, `RegisterSwapHandler`) with counterfactual rollout evaluation (`EvaluateRollout`, `CompareRollouts`) and evolutionary tuning (`OptimizeSpec`).
+- **Steering & formations**: Classical steering (`SteerSeek`, `SteerFlee`, `SteerArrive`, `SteerPursue`, `SteerEvade`, `SteerWander`), Reynolds Boids (`FlockBehavior`), reciprocal collision avoidance (`SteerAvoidActors`), and squad formations (`FollowLeaderBehavior`, `FormationOffsets`).
+- **Navigation & influence maps**: Deterministic A\* (`NavGraph`, `FindPath`), 2D `GridMap` with line-of-sight path smoothing (`SmoothPath`) and Dijkstra `FlowField`, 3D `WaypointGraph` and `VoxelGrid`, and 2D threat/pheromone `InfluenceMap` (`StampRadiusWithLOS`, `StepWithWalls`, `SteerInfluence`, `ApplyCostToGridMap`).
+- **Replay & demos**: `LiveDriver`, `HistoricalDriver`, JSON/binary `EventLog` codecs, six examples (`arena`, `flock`, `nav`, `scene3d`, `planner`, `replay`), and a browser WASM demo gallery (`web/`).
