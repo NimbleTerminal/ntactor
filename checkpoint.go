@@ -64,6 +64,71 @@ func (n *patrolBoxNode) Evaluate(dt float64, self *Actor, world *World) NodeStat
 	return StatusRunning
 }
 
+type investigateMemoryNode struct {
+	tag           string
+	speed         float64
+	maxForce      float64
+	leadSeconds   float64
+	minConfidence float64
+	arrivalRadius float64
+	capRad        float64
+	destroy       bool
+	scoreKey      string
+	intentKind    string
+	gridMap       *GridMap
+	follow        *FollowPathBehavior
+	goalTargetID  ActorID
+	goalPos       Vec3
+}
+
+func (n *investigateMemoryNode) Evaluate(dt float64, self *Actor, world *World) NodeStatus {
+	mem := self.Memory()
+	rec, ok := mem.BestByTag(self.Position, n.tag, n.minConfidence)
+	if !ok {
+		return StatusFailure
+	}
+	if target := world.ActorByID(rec.TargetID); target != nil && world.HasLineOfSight(self.Position, target.Position) {
+		mem.Observe(target, SenseVision, 1.0, world.SimTime(), true)
+		rec, _ = mem.Get(target.ID)
+		if n.capRad > 0 && self.Position.Dist(target.Position) <= n.capRad {
+			onCaptureTarget(self, world, target, n.destroy, n.scoreKey, n.intentKind)
+			mem.Forget(target.ID)
+			n.follow.SetPath(nil)
+			n.goalTargetID = InvalidActorID
+			return StatusSuccess
+		}
+	} else if self.Position.Dist(rec.LastKnownPosition) <= n.arrivalRadius {
+		mem.Forget(rec.TargetID)
+		n.follow.SetPath(nil)
+		n.goalTargetID = InvalidActorID
+		return StatusFailure
+	}
+
+	goal := rec.ExtrapolatedPosition(n.leadSeconds)
+	if n.gridMap != nil {
+		if cx, cy, inBounds := n.gridMap.WorldToCell(goal); !inBounds || n.gridMap.IsWall(cx, cy) {
+			goal = rec.LastKnownPosition
+		}
+		if n.goalTargetID != rec.TargetID || goal.Dist(n.goalPos) > n.gridMap.CellSize() || n.follow.Completed() || len(n.follow.Path) == 0 {
+			path, found := n.gridMap.FindWorldPath(self.Position, goal, true)
+			if !found || len(path) == 0 {
+				path = []Vec3{goal}
+			}
+			n.follow.SetPath(path)
+			n.goalTargetID = rec.TargetID
+			n.goalPos = goal
+		}
+		n.follow.Tick(dt, self, world)
+		self.Blackboard().SetString("status", fmt.Sprintf("investigate %s#%d (conf=%.2f)", n.tag, rec.TargetID, rec.Confidence))
+		return StatusRunning
+	}
+
+	desired := SteerArrive(self.Position, goal, n.speed, 2.5)
+	ApplySteering(self, desired, n.maxForce, n.speed, dt)
+	self.Blackboard().SetString("status", fmt.Sprintf("investigate %s#%d (conf=%.2f)", n.tag, rec.TargetID, rec.Confidence))
+	return StatusRunning
+}
+
 // CloneableBehavior is an optional interface that custom stateful Behaviors can
 // implement so World.Checkpoint, World.Restore, and World.Clone deep-copy their
 // internal state across simulation branches.
@@ -334,6 +399,17 @@ func cloneBTNode(node BTNode, trace *ExecutionTrace) BTNode {
 			cp.patrol = &pcp
 		}
 		return &cp
+	case *investigateMemoryNode:
+		if n == nil {
+			return nil
+		}
+		cp := *n
+		if n.follow != nil {
+			fcp := *n.follow
+			fcp.Path = slices.Clone(n.follow.Path)
+			cp.follow = &fcp
+		}
+		return &cp
 	default:
 		return node
 	}
@@ -346,7 +422,7 @@ type ActorRNGCheckpoint struct {
 }
 
 // ActorCheckpoint captures a single Actor's identity, kinematics, Blackboard,
-// and in-memory Behavior/State for deterministic rollback and branching.
+// SensoryMemory, and in-memory Behavior/State for deterministic rollback and branching.
 type ActorCheckpoint struct {
 	ID         ActorID           `json:"id"`
 	Tag        string            `json:"tag"`
@@ -354,6 +430,7 @@ type ActorCheckpoint struct {
 	Velocity   Vec3              `json:"velocity"`
 	Radius     float64           `json:"radius,omitempty"`
 	Blackboard []BlackboardEntry `json:"blackboard,omitempty"`
+	Memory     []MemoryRecord    `json:"memory,omitempty"`
 	behavior   Behavior
 	state      any
 }
@@ -393,6 +470,7 @@ func (w *World) Checkpoint() WorldCheckpoint {
 			Velocity:   a.Velocity,
 			Radius:     a.Radius,
 			Blackboard: a.bb.Entries(),
+			Memory:     a.mem.Records(),
 			behavior:   CloneBehavior(a.Behavior),
 			state:      a.State,
 		})
@@ -487,6 +565,10 @@ func (w *World) Restore(cp WorldCheckpoint) {
 		for _, e := range ac.Blackboard {
 			bb.Set(e.Key, e.Value)
 		}
+		var mem *SensoryMemory
+		if len(ac.Memory) > 0 {
+			mem = &SensoryMemory{records: slices.Clone(ac.Memory)}
+		}
 		a := &Actor{
 			ID:       ac.ID,
 			Tag:      ac.Tag,
@@ -496,6 +578,7 @@ func (w *World) Restore(cp WorldCheckpoint) {
 			Behavior: beh,
 			State:    st,
 			bb:       bb,
+			mem:      mem,
 			world:    w,
 		}
 		if a.ID >= w.nextID {

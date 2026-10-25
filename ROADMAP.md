@@ -5,6 +5,12 @@ is already implemented.
 
 ## Done
 
+- [x] **Sensory Memory & Last-Known-Position Tracking (`memory.go`, `actor.go`, `spec.go`)**:
+  deterministic `Actor.Memory()` (`SensoryMemory`, `MemoryRecord`, `SenseKind`),
+  `PerceiveVisionCone`, `PerceiveRadius`, `ExtrapolatedPosition`, `EmitSound`,
+  and declarative `BehaviorSpec` primitives (`"perceive_tag"`,
+  `"has_memory_of_tag"`, `"investigate_memory"`, `"emit_sound"`,
+  `"memory_confidence_for_tag"`).
 - [x] **Mid-Simulation Checkpointing, Rollback & Branching (`checkpoint.go`, `rng.go`, `spec.go`)**:
   `RNGCheckpoint` (`RNG.Checkpoint`, `RNG.Restore`, `RNG.Clone`), `WorldCheckpoint`
   (`World.Checkpoint`, `World.Restore`, `World.RestoreWithRegistry`, `World.Clone`,

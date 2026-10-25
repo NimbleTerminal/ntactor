@@ -2038,3 +2038,88 @@ func TestWorldCheckpointRestoreCloneAndMidSimRollout(t *testing.T) {
 		t.Fatalf("EvaluateRollout mutated BaseWorld: tick=%d hash=0x%x", w.TickCount(), w.Hash())
 	}
 }
+
+func TestSensoryMemorySoundAndDeclarativeInvestigation(t *testing.T) {
+	gm := NewGridMap(20, 20, 1.0, Vec2(0, 0))
+	// Wall blocking direct LOS between (2,5) and (15,5) once target moves behind (10, 2..8).
+	gm.SetRectWall(10, 2, 10, 8, true)
+
+	reg := NewStandardRegistry(StandardRegistryConfig{GridMap: gm})
+	specJSON := []byte(`{
+		"type": "selector",
+		"children": [
+			{
+				"type": "sequence",
+				"children": [
+					{"type": "condition", "name": "perceive_tag", "params": {"tag": "intruder", "radius": 20.0, "decay_rate": 0.15, "min_confidence": 0.1}},
+					{"type": "action", "name": "investigate_memory", "params": {"tag": "intruder", "speed": 10.0, "lead_seconds": 0.0, "arrival_radius": 1.2, "capture_radius": 1.2, "destroy_target": true, "score_key": "captures"}}
+				]
+			},
+			{"type": "action", "name": "wander", "params": {"speed": 3.0, "jitter": 0.2, "max_radius": 15.0}}
+		]
+	}`)
+	bt, err := reg.CompileJSON(specJSON)
+	if err != nil {
+		t.Fatalf("CompileJSON failed: %v", err)
+	}
+
+	w := NewWorld(Config{
+		Seed:        42,
+		Perception:  NewGridIndex(3.0),
+		LineOfSight: gm.HasLineOfSight,
+	})
+	gid := w.Spawn(Actor{Tag: "guard", Position: gm.CellToWorld(2, 5), Behavior: bt})
+	iid := w.Spawn(Actor{Tag: "intruder", Position: gm.CellToWorld(6, 5), Behavior: Idle})
+
+	// 1. Tick 1: guard has unobstructed LOS to intruder at (6.5, 5.5) and records it in Memory().
+	w.Tick(0.1, nil)
+	guard := w.ActorByID(gid)
+	rec, ok := guard.Memory().Get(iid)
+	if !ok || !rec.Visible || rec.Confidence != 1.0 {
+		t.Fatalf("expected guard Memory() to record visible intruder with confidence=1.0, got %+v (ok=%v)", rec, ok)
+	}
+
+	// 2. Intruder teleports behind the wall to (15, 5) where LOS from guard is blocked.
+	intruder := w.ActorByID(iid)
+	intruder.Position = gm.CellToWorld(15, 5)
+
+	// Step 2 ticks: guard no longer has LOS, so Visible becomes false and Confidence decays,
+	// but guard still remembers the last known position (6.5, 5.5) and steers toward it!
+	for range 2 {
+		w.Tick(0.1, nil)
+	}
+	rec, ok = guard.Memory().Get(iid)
+	if !ok || rec.Visible || rec.Confidence >= 1.0 || rec.Confidence < 0.8 {
+		t.Fatalf("expected occluded memory with decayed confidence in [0.8, 1.0), got %+v (ok=%v)", rec, ok)
+	}
+	if guard.Position.X <= 2.6 {
+		t.Fatalf("expected guard to advance toward last known position (6.5, 5.5), got pos=%+v", guard.Position)
+	}
+
+	// Step until guard reaches the empty last-known position (6.5, 5.5): investigate_memory
+	// should clear (Forget) the stale memory record upon arrival!
+	for range 20 {
+		w.Tick(0.1, nil)
+	}
+	if _, stillThere := guard.Memory().Get(iid); stillThere {
+		t.Fatalf("expected guard to Forget stale memory after arriving at empty last-known position")
+	}
+
+	// 3. Test EmitSound acoustic stimulus through walls:
+	EmitSound(w, intruder, 15.0, 1.0)
+	soundRec, ok := guard.Memory().Get(iid)
+	if !ok || soundRec.Sense != SenseSound || soundRec.Visible {
+		t.Fatalf("expected EmitSound to record SenseSound memory on guard, got %+v (ok=%v)", soundRec, ok)
+	}
+
+	// Checkpoint & Restore preserves SensoryMemory records and World.Hash():
+	cp := w.Checkpoint()
+	cloned := w.Clone()
+	if cloned.Hash() != w.Hash() || cloned.ActorByID(gid).Memory().Len() != 1 {
+		t.Fatalf("expected Clone() to preserve SensoryMemory and World.Hash()")
+	}
+	w.Restore(cp)
+	if w.Hash() != cp.WorldHash {
+		t.Fatalf("expected Restore(cp) to match cp.WorldHash")
+	}
+}

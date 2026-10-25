@@ -521,8 +521,8 @@ func (b *Blackboard) Hash() uint64 {
 	return h
 }
 
-// ActorSnapshot is a JSON-serializable snapshot of a single Actor's kinematics
-// and Blackboard memory.
+// ActorSnapshot is a JSON-serializable snapshot of a single Actor's kinematics,
+// Blackboard memory, and sensory memory records.
 type ActorSnapshot struct {
 	ID         ActorID           `json:"id"`
 	Tag        string            `json:"tag"`
@@ -530,6 +530,7 @@ type ActorSnapshot struct {
 	Velocity   Vec3              `json:"velocity"`
 	Radius     float64           `json:"radius,omitempty"`
 	Blackboard []BlackboardEntry `json:"blackboard,omitempty"`
+	Memory     []MemoryRecord    `json:"memory,omitempty"`
 }
 
 // WorldSnapshot is a deterministic, JSON-serializable snapshot of a World's
@@ -558,6 +559,7 @@ func (w *World) Snapshot() WorldSnapshot {
 			Velocity:   a.Velocity,
 			Radius:     a.Radius,
 			Blackboard: a.bb.Entries(),
+			Memory:     a.mem.Records(),
 		})
 	}
 	return WorldSnapshot{

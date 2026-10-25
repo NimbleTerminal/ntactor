@@ -75,6 +75,7 @@ type Actor struct {
 
 	world     *World
 	bb        *Blackboard
+	mem       *SensoryMemory
 	destroyed bool
 }
 
@@ -88,6 +89,18 @@ func (a *Actor) Blackboard() *Blackboard {
 		a.bb = NewBlackboard()
 	}
 	return a.bb
+}
+
+// Memory returns the Actor's deterministic SensoryMemory store, allocating it
+// on first access if nil.
+func (a *Actor) Memory() *SensoryMemory {
+	if a == nil {
+		return nil
+	}
+	if a.mem == nil {
+		a.mem = NewSensoryMemory()
+	}
+	return a.mem
 }
 
 // Emit records an Intent for the current tick on both the Actor and its owning

@@ -953,6 +953,55 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		}, nil
 	})
 
+	r.RegisterCondition(PrimitiveDef{
+		Name:        "perceive_tag",
+		Description: "Steps self.Memory(), scans for Actors with tag within radius/cone, and succeeds if any matching Actor is visible or remembered above min_confidence.",
+		Params: []ParamSpec{
+			{Name: "tag", Type: "string", Required: true, Description: "Target Actor tag"},
+			{Name: "radius", Type: "float", Default: 15.0, Min: FloatBound(0.1), Max: FloatBound(10000), Description: "Detection radius"},
+			{Name: "half_angle_deg", Type: "float", Default: 180.0, Min: FloatBound(1), Max: FloatBound(180), Description: "Vision cone half-angle in degrees (< 180 uses cone)"},
+			{Name: "require_los", Type: "bool", Default: true, Description: "Require World.HasLineOfSight"},
+			{Name: "decay_rate", Type: "float", Default: 0.25, Min: FloatBound(0), Max: FloatBound(100), Description: "Confidence decay rate per second"},
+			{Name: "min_confidence", Type: "float", Default: 0.1, Min: FloatBound(0.01), Max: FloatBound(1), Description: "Minimum confidence threshold to succeed"},
+		},
+	}, func(p Params) (func(self *Actor, world *World) bool, error) {
+		tag := p.String("tag", "")
+		radius := p.Float("radius", 15.0)
+		halfDeg := p.Float("half_angle_deg", 180.0)
+		requireLOS := p.Bool("require_los", true)
+		decayRate := p.Float("decay_rate", 0.25)
+		minConf := p.Float("min_confidence", 0.1)
+		halfRad := halfDeg * math.Pi / 180.0
+		return func(self *Actor, world *World) bool {
+			mem := self.Memory()
+			dt := world.DT()
+			if dt <= 0 {
+				dt = 0.05
+			}
+			if halfDeg < 179.9 {
+				mem.PerceiveVisionCone(self, world, radius, halfRad, decayRate, dt)
+			} else {
+				mem.PerceiveRadius(self, world, radius, requireLOS, decayRate, dt)
+			}
+			return mem.MaxConfidenceByTag(tag) >= minConf
+		}, nil
+	})
+
+	r.RegisterCondition(PrimitiveDef{
+		Name:        "has_memory_of_tag",
+		Description: "Succeeds when self.Memory() holds a record for tag with Confidence >= min_confidence.",
+		Params: []ParamSpec{
+			{Name: "tag", Type: "string", Required: true, Description: "Target Actor tag"},
+			{Name: "min_confidence", Type: "float", Default: 0.1, Min: FloatBound(0.01), Max: FloatBound(1), Description: "Minimum confidence threshold"},
+		},
+	}, func(p Params) (func(self *Actor, world *World) bool, error) {
+		tag := p.String("tag", "")
+		minConf := p.Float("min_confidence", 0.1)
+		return func(self *Actor, _ *World) bool {
+			return self.Memory().MaxConfidenceByTag(tag) >= minConf
+		}, nil
+	})
+
 	// --- Built-in Actions ---
 	r.RegisterAction(PrimitiveDef{
 		Name:        "arrive_tag",
@@ -1337,6 +1386,61 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		}), nil
 	})
 
+	r.RegisterAction(PrimitiveDef{
+		Name:        "investigate_memory",
+		Description: "Navigates toward the best remembered position of an Actor with tag in self.Memory(), capturing it if visible or clearing the memory if absent upon arrival.",
+		Params: []ParamSpec{
+			{Name: "tag", Type: "string", Required: true, Description: "Target Actor tag"},
+			{Name: "speed", Type: "float", Default: 8.0, Min: FloatBound(0.1), Max: FloatBound(500), Description: "Investigation speed"},
+			{Name: "max_force", Type: "float", Default: 26.0, Min: FloatBound(0.1), Max: FloatBound(2000), Description: "Max steering force"},
+			{Name: "lead_seconds", Type: "float", Default: 0.4, Min: FloatBound(0), Max: FloatBound(10), Description: "Velocity extrapolation horizon in seconds"},
+			{Name: "min_confidence", Type: "float", Default: 0.1, Min: FloatBound(0.01), Max: FloatBound(1), Description: "Minimum confidence threshold"},
+			{Name: "arrival_radius", Type: "float", Default: 1.0, Min: FloatBound(0.1), Max: FloatBound(100), Description: "Radius at which an empty last-known position is cleared"},
+			{Name: "capture_radius", Type: "float", Default: 1.3, Min: FloatBound(0), Max: FloatBound(100), Description: "Radius at which a visible target is captured"},
+			{Name: "destroy_target", Type: "bool", Default: false, Description: "Destroy target Actor on capture"},
+			{Name: "score_key", Type: "string", Description: "Optional Blackboard key incremented on capture"},
+			{Name: "intent", Type: "string", Description: "Optional Intent Kind emitted on capture"},
+		},
+	}, func(p Params) (BTNode, error) {
+		speed := p.Float("speed", 8.0)
+		maxForce := p.Float("max_force", 26.0)
+		arrRad := p.Float("arrival_radius", 1.0)
+		return &investigateMemoryNode{
+			tag:           p.String("tag", ""),
+			speed:         speed,
+			maxForce:      maxForce,
+			leadSeconds:   p.Float("lead_seconds", 0.4),
+			minConfidence: p.Float("min_confidence", 0.1),
+			arrivalRadius: arrRad,
+			capRad:        p.Float("capture_radius", 1.3),
+			destroy:       p.Bool("destroy_target", false),
+			scoreKey:      p.String("score_key", ""),
+			intentKind:    p.String("intent", ""),
+			gridMap:       cfg.GridMap,
+			follow: &FollowPathBehavior{
+				Speed:         speed,
+				MaxForce:      maxForce,
+				ArrivalRadius: math.Max(0.4, arrRad*0.5),
+			},
+		}, nil
+	})
+
+	r.RegisterAction(PrimitiveDef{
+		Name:        "emit_sound",
+		Description: "Propagates an acoustic stimulus from self to all Actors within radius via EmitSound and returns StatusSuccess.",
+		Params: []ParamSpec{
+			{Name: "radius", Type: "float", Default: 15.0, Min: FloatBound(0.1), Max: FloatBound(10000), Description: "Sound propagation radius"},
+			{Name: "loudness", Type: "float", Default: 0.9, Min: FloatBound(0.01), Max: FloatBound(1.0), Description: "Peak confidence at source in [0, 1]"},
+		},
+	}, func(p Params) (BTNode, error) {
+		radius := p.Float("radius", 15.0)
+		loudness := p.Float("loudness", 0.9)
+		return Action(func(_ float64, self *Actor, world *World) NodeStatus {
+			EmitSound(world, self, radius, loudness)
+			return StatusSuccess
+		}), nil
+	})
+
 	// --- Built-in Consideration Inputs ---
 	r.RegisterConsideration(PrimitiveDef{
 		Name:        "nearest_tag_distance",
@@ -1408,6 +1512,19 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 				return 0
 			}
 			return cfg.InfluenceMap.SampleWorld(self.Position)
+		}, nil
+	})
+
+	r.RegisterConsideration(PrimitiveDef{
+		Name:        "memory_confidence_for_tag",
+		Description: "Returns the highest SensoryMemory confidence in [0, 1] for Actors with tag.",
+		Params: []ParamSpec{
+			{Name: "tag", Type: "string", Required: true, Description: "Target Actor tag"},
+		},
+	}, func(p Params) (func(self *Actor, world *World) float64, error) {
+		tag := p.String("tag", "")
+		return func(self *Actor, _ *World) float64 {
+			return self.Memory().MaxConfidenceByTag(tag)
 		}, nil
 	})
 

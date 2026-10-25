@@ -512,6 +512,9 @@ func (w *World) Hash() uint64 {
 		mixUint64(math.Float64bits(a.Velocity.Z))
 		mixUint64(math.Float64bits(a.Radius))
 		a.bb.mixHash(mixUint64, mixString)
+		if a.mem != nil && len(a.mem.records) > 0 {
+			a.mem.mixHash(mixUint64, mixString)
+		}
 	}
 	return h
 }

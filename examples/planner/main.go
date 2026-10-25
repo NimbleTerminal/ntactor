@@ -424,6 +424,76 @@ func buildCandidateSpecs() []presetSpec {
 				},
 			},
 		},
+		{
+			name: "memory_hound",
+			desc: "SensoryMemory: tracks LOS/sound into Memory() and investigates last-known positions",
+			spec: ntactor.BehaviorSpec{
+				Type: "selector",
+				Children: []ntactor.BehaviorSpec{
+					{
+						Type: "sequence",
+						Children: []ntactor.BehaviorSpec{
+							{
+								Type: "condition",
+								Name: "perceive_tag",
+								Params: map[string]any{
+									"tag":            "intruder",
+									"radius":         30.0,
+									"require_los":    true,
+									"decay_rate":     0.2,
+									"min_confidence": 0.1,
+								},
+							},
+							{
+								Type: "action",
+								Name: "investigate_memory",
+								Params: map[string]any{
+									"tag":            "intruder",
+									"speed":          10.5,
+									"lead_seconds":   0.4,
+									"capture_radius": 1.3,
+									"destroy_target": true,
+									"score_key":      "captures",
+									"intent":         "captured_intruder",
+								},
+							},
+						},
+					},
+					{
+						Type: "sequence",
+						Children: []ntactor.BehaviorSpec{
+							{
+								Type:   "condition",
+								Name:   "tag_within_radius",
+								Params: map[string]any{"tag": "beacon", "radius": 50.0},
+							},
+							{
+								Type: "action",
+								Name: "follow_path_to_tag",
+								Params: map[string]any{
+									"tag":            "beacon",
+									"speed":          9.0,
+									"smooth":         true,
+									"capture_radius": 1.2,
+									"destroy_target": true,
+									"score_key":      "beacons",
+									"intent":         "collected_beacon",
+								},
+							},
+						},
+					},
+					{
+						Type: "action",
+						Name: "patrol_box",
+						Params: map[string]any{
+							"half_width":  16.0,
+							"half_height": 4.5,
+							"speed":       7.0,
+						},
+					},
+				},
+			},
+		},
 	}
 
 	out := make([]presetSpec, len(rawSpecs))
@@ -478,14 +548,20 @@ func buildPlannerWorld(seed uint64, gm *ntactor.GridMap, reg *ntactor.BehaviorRe
 			rng.FloatRange(-float64(plannerW)/2+4, float64(plannerW)/2-4),
 			rng.FloatRange(-float64(plannerH)/2+2, float64(plannerH)/2-2),
 		)
+		wb := &ntactor.WanderBehavior{
+			Speed:     6.5,
+			Jitter:    0.45,
+			MaxRadius: float64(plannerH)/2 - 2,
+		}
 		world.Spawn(ntactor.Actor{
 			Tag:      "intruder",
 			Position: pos,
-			Behavior: &ntactor.WanderBehavior{
-				Speed:     6.5,
-				Jitter:    0.45,
-				MaxRadius: float64(plannerH)/2 - 2,
-			},
+			Behavior: ntactor.BehaviorFunc(func(dt float64, self *ntactor.Actor, w *ntactor.World) {
+				wb.Tick(dt, self, w)
+				if w.TickCount()%10 == 0 {
+					ntactor.EmitSound(w, self, 18.0, 0.85)
+				}
+			}),
 		})
 	})
 
@@ -509,9 +585,17 @@ func buildPlannerWorld(seed uint64, gm *ntactor.GridMap, reg *ntactor.BehaviorRe
 	// Spawn initial targets so rollouts and live runs have immediate tasks.
 	w.Spawn(ntactor.Actor{Tag: "beacon", Position: ntactor.Vec2(-4, 4), Behavior: ntactor.Idle})
 	w.Spawn(ntactor.Actor{Tag: "beacon", Position: ntactor.Vec2(15, -4), Behavior: ntactor.Idle})
-	w.Spawn(ntactor.Actor{Tag: "intruder", Position: ntactor.Vec2(3, -3), Behavior: &ntactor.WanderBehavior{
-		Speed: 6.0, Jitter: 0.4, MaxRadius: 5.5,
-	}})
+	wbInit := &ntactor.WanderBehavior{Speed: 6.0, Jitter: 0.4, MaxRadius: 5.5}
+	w.Spawn(ntactor.Actor{
+		Tag:      "intruder",
+		Position: ntactor.Vec2(3, -3),
+		Behavior: ntactor.BehaviorFunc(func(dt float64, self *ntactor.Actor, world *ntactor.World) {
+			wbInit.Tick(dt, self, world)
+			if world.TickCount()%10 == 0 {
+				ntactor.EmitSound(world, self, 18.0, 0.85)
+			}
+		}),
+	})
 
 	return w
 }
@@ -538,6 +622,20 @@ func syncPlannerCanvas(grid *ntcanvas.GraphemeGrid, w *ntactor.World, gm *ntacto
 		for x := 1; x < plannerW-1; x++ {
 			if gm.IsWall(x, y) {
 				grid.SetTextWithStyle(ntcanvas.Point{X: x, Y: y}, "█", dim)
+			}
+		}
+	}
+
+	// Draw remembered (occluded) SensoryMemory last-known positions as '?' markers.
+	for _, u := range w.FindByTag("unit") {
+		for _, rec := range u.Memory().Records() {
+			if rec.Visible {
+				continue
+			}
+			gx := int(math.Round(rec.LastKnownPosition.X)) + plannerW/2
+			gy := int(math.Round(rec.LastKnownPosition.Y)) + plannerH/2
+			if gx >= 1 && gx < plannerW-1 && gy >= 1 && gy < plannerH-1 && !gm.IsWall(gx, gy) {
+				grid.SetTextWithStyle(ntcanvas.Point{X: gx, Y: gy}, "?", dim)
 			}
 		}
 	}
@@ -577,6 +675,7 @@ type plannerModel struct {
 	presets     []presetSpec
 	specIdx     int
 	world       *ntactor.World
+	checkpoint  *ntactor.WorldCheckpoint
 	liveDriver  *ntactor.LiveDriver
 	histDriver  *ntactor.HistoricalDriver
 	rankings    []ntactor.RankedCandidate
@@ -726,6 +825,8 @@ func (m plannerModel) Help() []key.Binding {
 		demohelp.Key("Next spec", "s", "tab"),
 		demohelp.Key("Eval rollouts", "e"),
 		demohelp.Key("Tune spec", "m"),
+		demohelp.Key("Checkpoint", "k"),
+		demohelp.Key("Restore cp", "l"),
 		demohelp.Key("Beacon", "b"),
 		demohelp.Key("Intruder", "i"),
 		demohelp.Key("Replay log", "r"),
@@ -788,6 +889,18 @@ func (m plannerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.replaying {
 				m.optimizeActiveSpec()
 			}
+		case "k":
+			if !m.replaying {
+				cp := m.world.Checkpoint()
+				m.checkpoint = &cp
+				m.lastTuneMsg = fmt.Sprintf("Saved WorldCheckpoint at tick=%d (hash=0x%08x)", cp.TickCount, uint32(cp.WorldHash))
+			}
+		case "l":
+			if !m.replaying && m.checkpoint != nil {
+				m.world.Restore(*m.checkpoint)
+				m.lastTuneMsg = fmt.Sprintf("Restored WorldCheckpoint to tick=%d (hash=0x%08x)", m.world.TickCount(), uint32(m.world.Hash()))
+				syncPlannerCanvas(m.grid, m.world, m.gm, m.presets[m.specIdx].Name, "LIVE")
+			}
 		case "b":
 			if !m.replaying {
 				m.liveDriver.PushEvent(ntactor.Event{Kind: "beacon"})
@@ -839,26 +952,27 @@ func (m plannerModel) renderView() string {
 			marker, i+1, rk.Name, rk.Result.Score, uint32(rk.Result.WorldHash)))
 	}
 
-	right = append(right, "", "UNIT BLACKBOARDS & EXECUTION TRACES (TraceActor):")
+	right = append(right, "", "UNIT BLACKBOARDS, SENSORY MEMORY & TRACES:")
 	for _, u := range m.world.FindByTag("unit") {
 		bb := u.Blackboard()
 		status := bb.StringOr("status", "idle")
 		caps := int(bb.FloatOr("captures", 0))
 		beac := int(bb.FloatOr("beacons", 0))
+		memConf := u.Memory().MaxConfidenceByTag("intruder")
 		traceStr := "-"
 		if tr, ok := ntactor.TraceActor(u); ok && len(tr.ActivePath) > 0 {
 			traceStr = strings.Join(tr.ActivePath, " -> ")
 		}
-		right = append(right, fmt.Sprintf("  Unit #%d: status=%-18s captures=%d beacons=%d  trace=[%s]",
-			u.ID, status, caps, beac, traceStr))
+		right = append(right, fmt.Sprintf("  Unit #%d: status=%-18s cap=%d beac=%d mem=%.2f  trace=[%s]",
+			u.ID, status, caps, beac, memConf, traceStr))
 	}
 	if m.lastTuneMsg != "" {
-		right = append(right, fmt.Sprintf("  Evolutionary Tuner: %s", m.lastTuneMsg))
+		right = append(right, fmt.Sprintf("  Status: %s", m.lastTuneMsg))
 	}
 
 	var sb strings.Builder
-	sb.WriteString("ntactor Declarative Behavior Planner — JSON BehaviorSpec + Utility AI + Rollout Evaluator + Blackboard\n")
-	sb.WriteString("Legend: U=Programmable Unit  ✦=Beacon  !=Intruder  █=Wall  |  Specs hot-swap via Event{Kind: \"set_behavior\", Payload: json}\n\n")
+	sb.WriteString("ntactor Declarative Behavior Planner — JSON BehaviorSpec + Utility/FSM/GOAP + SensoryMemory + Checkpoints\n")
+	sb.WriteString("Legend: U=Programmable Unit  ✦=Beacon  !=Intruder  ?=Remembered Target  █=Wall\n\n")
 
 	total := len(canvasLines)
 	if len(right) > total {
@@ -889,7 +1003,7 @@ func (m plannerModel) renderView() string {
 		sb.WriteByte('\n')
 	}
 
-	sb.WriteString("\nCONTROLS: [s] hot-swap spec • [e] evaluate rollouts • [m] evolutionary tune spec • [b] beacon • [i] intruder • [r] replay • [space] pause • [q] quit")
+	sb.WriteString("\nCONTROLS: [s] hot-swap spec • [e] evaluate rollouts • [m] evolutionary tune • [k/l] save/restore checkpoint • [b/i] spawn • [r] replay • [q] quit")
 	return sb.String()
 }
 

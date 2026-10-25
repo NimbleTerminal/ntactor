@@ -76,6 +76,15 @@ bb.SetActorID("target_id", target.ID)
 energy := bb.FloatOr("energy", 0.0)
 ```
 
+### Sensory Memory & Last-Known-Position Tracking (`Actor.Memory()`)
+
+In addition to `Blackboard`, every `Actor` has an `ActorID`-sorted `SensoryMemory` store (`self.Memory()`) that tracks perceived targets (`MemoryRecord`) across time:
+
+- **Vision & Radius Scans**: `self.Memory().PerceiveVisionCone(self, world, radius, halfAngleRad, decayRate, dt)` and `PerceiveRadius(self, world, radius, requireLOS, decayRate, dt)` step existing memories (`Age += dt`, `Confidence -= decayRate * dt`, pruning expired records) and refresh any currently visible Actors (`Confidence = 1.0`, `Visible = true`).
+- **Acoustic Stimuli**: `EmitSound(world, source, radius, loudness)` propagates a `SenseSound` stimulus with linear distance falloff to all listeners within `radius` (even through walls).
+- **Last-Known Extrapolation**: When a target breaks `HasLineOfSight`, its `MemoryRecord` remains in `self.Memory()` with `Visible = false` while `Confidence` decays; `rec.ExtrapolatedPosition(maxLeadSec)` projects `LastKnownPosition` along `LastKnownVelocity`.
+- **Declarative `BehaviorSpec` Primitives**: `"perceive_tag"`, `"has_memory_of_tag"`, `"investigate_memory"`, `"emit_sound"`, and `"memory_confidence_for_tag"`.
+
 ---
 
 ## 3. Choosing & Composing Decision Architectures
