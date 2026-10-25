@@ -1915,3 +1915,126 @@ func TestInfluenceMapDecayDiffusionSteeringAndCostRouting(t *testing.T) {
 		t.Fatalf("expected steer_influence (seek_high=false) to accelerate scout away from stamped threat")
 	}
 }
+
+func TestWorldCheckpointRestoreCloneAndMidSimRollout(t *testing.T) {
+	gm := NewGridMap(20, 20, 1.0, Vec2(-10, -10))
+	reg := NewStandardRegistry(StandardRegistryConfig{GridMap: gm})
+
+	specJSON := []byte(`{
+		"type": "selector",
+		"children": [
+			{
+				"type": "sequence",
+				"children": [
+					{"type": "condition", "name": "tag_within_radius", "params": {"tag": "beacon", "radius": 20.0}},
+					{"type": "action", "name": "follow_path_to_tag", "params": {"tag": "beacon", "speed": 8.0, "capture_radius": 1.2, "destroy_target": true, "score_key": "beacons"}}
+				]
+			},
+			{"type": "action", "name": "wander", "params": {"speed": 5.0, "jitter": 0.4, "max_radius": 8.0}}
+		]
+	}`)
+	bt, err := reg.CompileJSON(specJSON)
+	if err != nil {
+		t.Fatalf("CompileJSON failed: %v", err)
+	}
+
+	w := NewWorld(Config{
+		Seed:        99,
+		Perception:  NewGridIndex(3.0),
+		LineOfSight: gm.HasLineOfSight,
+	})
+	uid := w.Spawn(Actor{Tag: "unit", Position: Vec2(-5, -2), Behavior: bt})
+	w.ActorByID(uid).Blackboard().SetString("behavior_spec", string(specJSON))
+	w.Spawn(Actor{Tag: "beacon", Position: Vec2(4, 2), Behavior: Idle})
+	w.Spawn(Actor{Tag: "wisp", Position: Vec2(0, 0), Behavior: &WanderBehavior{Speed: 4.0, Jitter: 0.5}})
+
+	// Advance 15 ticks so RNG, ActorRNG, FollowPathBehavior, and Blackboards are mid-flight.
+	for range 15 {
+		_ = w.RNG().Uint64()
+		w.Tick(0.05, nil)
+	}
+
+	cp := w.Checkpoint()
+	cloned := w.Clone()
+	if cloned.Hash() != w.Hash() {
+		t.Fatalf("cloned World hash 0x%x != original 0x%x", cloned.Hash(), w.Hash())
+	}
+
+	// Step both w and cloned forward 30 ticks (including spawning a new actor at step 10).
+	for i := range 30 {
+		var evs []Event
+		if i == 10 {
+			evs = []Event{{Kind: "ping"}}
+			w.Spawn(Actor{Tag: "beacon", Position: Vec2(-3, 4), Behavior: Idle})
+			cloned.Spawn(Actor{Tag: "beacon", Position: Vec2(-3, 4), Behavior: Idle})
+		}
+		w.Tick(0.05, evs)
+		cloned.Tick(0.05, evs)
+	}
+	hashAt45 := w.Hash()
+	if cloned.Hash() != hashAt45 {
+		t.Fatalf("cloned World diverged after 30 ticks: 0x%x vs 0x%x", cloned.Hash(), hashAt45)
+	}
+
+	// Now restore w back to tick 15 and step the same 30 ticks again: must match hashAt45 bit-for-bit!
+	w.Restore(cp)
+	if w.TickCount() != 15 || w.Hash() != cp.WorldHash {
+		t.Fatalf("after Restore: tick=%d hash=0x%x, want tick=15 hash=0x%x", w.TickCount(), w.Hash(), cp.WorldHash)
+	}
+	for i := range 30 {
+		var evs []Event
+		if i == 10 {
+			evs = []Event{{Kind: "ping"}}
+			w.Spawn(Actor{Tag: "beacon", Position: Vec2(-3, 4), Behavior: Idle})
+		}
+		w.Tick(0.05, evs)
+	}
+	if w.Hash() != hashAt45 {
+		t.Fatalf("restored World diverged after re-running 30 ticks: 0x%x vs 0x%x", w.Hash(), hashAt45)
+	}
+
+	// Verify JSON round-trip of WorldCheckpoint + RestoreWithRegistry:
+	jsonBytes, err := EncodeCheckpointJSON(cp)
+	if err != nil {
+		t.Fatalf("EncodeCheckpointJSON failed: %v", err)
+	}
+	decodedCP, err := DecodeCheckpointJSON(jsonBytes)
+	if err != nil {
+		t.Fatalf("DecodeCheckpointJSON failed: %v", err)
+	}
+	fresh := NewWorld(Config{Seed: 1, Perception: NewGridIndex(3.0), LineOfSight: gm.HasLineOfSight})
+	if err := fresh.RestoreWithRegistry(decodedCP, reg); err != nil {
+		t.Fatalf("RestoreWithRegistry failed: %v", err)
+	}
+	if fresh.Hash() != cp.WorldHash {
+		t.Fatalf("RestoreWithRegistry hash 0x%x != checkpoint hash 0x%x", fresh.Hash(), cp.WorldHash)
+	}
+
+	// Verify mid-simulation EvaluateRollout using BaseWorld (without BuildWorld):
+	w.Restore(cp)
+	rolloutRes, err := EvaluateRollout(RolloutConfig{
+		BaseWorld: w,
+		Registry:  reg,
+		TargetTag: "unit",
+		Spec: BehaviorSpec{
+			Type:   "action",
+			Name:   "arrive_tag",
+			Params: map[string]any{"tag": "beacon", "speed": 9.0, "capture_radius": 1.2, "destroy_target": true, "score_key": "beacons"},
+		},
+		Ticks: 40,
+		DT:    0.05,
+		Score: func(rw *World, _ []IntentSummary) float64 {
+			return rw.ActorByID(uid).Blackboard().FloatOr("beacons", 0)
+		},
+	})
+	if err != nil {
+		t.Fatalf("mid-sim EvaluateRollout with BaseWorld failed: %v", err)
+	}
+	if rolloutRes.Score < 1.0 {
+		t.Fatalf("expected mid-sim rollout to collect beacon (score >= 1), got %v", rolloutRes.Score)
+	}
+	// BaseWorld w must remain untouched at tick 15!
+	if w.TickCount() != 15 || w.Hash() != cp.WorldHash {
+		t.Fatalf("EvaluateRollout mutated BaseWorld: tick=%d hash=0x%x", w.TickCount(), w.Hash())
+	}
+}

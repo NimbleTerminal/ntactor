@@ -5,6 +5,13 @@ is already implemented.
 
 ## Done
 
+- [x] **Mid-Simulation Checkpointing, Rollback & Branching (`checkpoint.go`, `rng.go`, `spec.go`)**:
+  `RNGCheckpoint` (`RNG.Checkpoint`, `RNG.Restore`, `RNG.Clone`), `WorldCheckpoint`
+  (`World.Checkpoint`, `World.Restore`, `World.RestoreWithRegistry`, `World.Clone`,
+  `EncodeCheckpointJSON`, `DecodeCheckpointJSON`), deep stateful `CloneBehavior`
+  (`*BehaviorTree`, `*FSM`, `*UtilitySelectorNode`, `*GOAPNode`,
+  `*FollowPathBehavior`, `*PatrolBehavior`), and live mid-simulation rollout
+  branching via `RolloutConfig.BaseWorld`.
 - [x] **Spatial Influence & Pheromone Maps (`influence.go`, `spec.go`)**:
   deterministic 2D `InfluenceMap` (`NewInfluenceMap`, `NewInfluenceMapFromGrid`,
   `StampRadius`, `StampRadiusWithLOS`, `Step`, `StepWithWalls`, `GradientWorld`,

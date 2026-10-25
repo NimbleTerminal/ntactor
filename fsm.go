@@ -18,9 +18,10 @@ type FSMState struct {
 
 // Transition defines a directed conditional edge between two states in an FSM.
 type Transition struct {
-	From      StateID
-	To        StateID
-	Condition func(self *Actor, world *World) bool
+	From         StateID
+	To           StateID
+	AfterSeconds float64
+	Condition    func(self *Actor, world *World) bool
 }
 
 // FSM is a deterministic Finite State Machine that implements Behavior.
@@ -72,6 +73,19 @@ func (f *FSM) AddTransition(from, to StateID, cond func(self *Actor, world *Worl
 		From:      from,
 		To:        to,
 		Condition: cond,
+	})
+	return f
+}
+
+// AddTransitionAfter appends a transition from -> to that requires at least
+// afterSeconds in the current state before evaluating cond (if cond is nil, the
+// timer alone triggers the transition).
+func (f *FSM) AddTransitionAfter(from, to StateID, afterSeconds float64, cond func(self *Actor, world *World) bool) *FSM {
+	f.edges = append(f.edges, Transition{
+		From:         from,
+		To:           to,
+		AfterSeconds: afterSeconds,
+		Condition:    cond,
 	})
 	return f
 }
@@ -129,7 +143,10 @@ func (f *FSM) Evaluate(dt float64, self *Actor, world *World) NodeStatus {
 		if edge.To == f.current {
 			continue
 		}
-		if edge.Condition != nil && edge.Condition(self, world) {
+		if edge.AfterSeconds > 0 && f.timeInState < edge.AfterSeconds {
+			continue
+		}
+		if (edge.Condition == nil && edge.AfterSeconds > 0) || (edge.Condition != nil && edge.Condition(self, world)) {
 			f.SetState(edge.To, self, world)
 			break
 		}

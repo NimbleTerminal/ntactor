@@ -87,6 +87,8 @@ func main() {
 }
 ```
 
+See [**`GUIDE.md`**](./GUIDE.md) for the complete developer guide covering the simulation contract, choosing and composing `FSM` / `BehaviorTree` / `UtilitySelector` / `GOAPNode` architectures, declarative JSON `BehaviorSpec` synthesis and evolutionary tuning, reciprocal collision avoidance, squad formations, 2D/3D pathfinding, and `InfluenceMap` routing.
+
 ## Demos & Sample Gallery
 
 Building requires Go 1.26.8 or newer. See [`examples/README.md`](./examples/README.md) for full details:
@@ -126,6 +128,7 @@ task serve-wasm-site   # builds web/demos/*.wasm, stages booba assets, serves ht
 | [`influence.go`](./influence.go) | `InfluenceMap`, `NewInfluenceMap`, `NewInfluenceMapFromGrid`, `SteerInfluence` | Deterministic 2D threat & pheromone fields with LOS-occluded stamping, wall-aware decay/diffusion, gradient steering, and `GridMap` cost coupling |
 | [`driver_live.go`](./driver_live.go) | `LiveDriver`, `LiveConfig`, `Frame`, `EventLog`, `Driver` | Accumulates wall time (variable clamped `dt` or fixed `FixedDT`), injects live events, and records an `EventLog` |
 | [`driver_historical.go`](./driver_historical.go) | `HistoricalDriver` | Replays a recorded `EventLog` or scripted `[]Frame` sequence for bit-exact historical determinism |
+| [`checkpoint.go`](./checkpoint.go) | `WorldCheckpoint`, `World.Checkpoint`, `World.Restore`, `World.Clone`, `EncodeCheckpointJSON`, `DecodeCheckpointJSON` | Mid-simulation state checkpointing, rollback/rewind, deep `World` cloning, and live rollout branching |
 | [`codec.go`](./codec.go) | `EncodeEventLogJSON`, `DecodeEventLogJSON`, `MarshalEventLogBinary`, `UnmarshalEventLogBinary` | Bounded JSON and compact binary serialization for recorded `EventLog` replays |
 
 ## Decision Making: FSM & Behavior Trees

@@ -679,24 +679,17 @@ func (r *BehaviorRegistry) compileNode(path string, spec BehaviorSpec, depth int
 			if math.IsNaN(tr.AfterSeconds) || math.IsInf(tr.AfterSeconds, 0) || tr.AfterSeconds < 0 {
 				return nil, fmt.Errorf("%w at %s: after_seconds must be non-negative finite", ErrInvalidSpec, trPath)
 			}
-			var condNode BTNode
+			var condFn func(self *Actor, world *World) bool
 			if tr.Condition != nil {
-				var err error
-				condNode, err = r.compileNode(trPath+".condition", *tr.Condition, depth+1, count, nil)
+				condNode, err := r.compileNode(trPath+".condition", *tr.Condition, depth+1, count, nil)
 				if err != nil {
 					return nil, err
 				}
-			}
-			afterSec := tr.AfterSeconds
-			fsm.AddTransition(tr.From, tr.To, func(self *Actor, world *World) bool {
-				if afterSec > 0 && fsm.TimeInState() < afterSec {
-					return false
-				}
-				if condNode != nil {
+				condFn = func(self *Actor, world *World) bool {
 					return condNode.Evaluate(0, self, world) == StatusSuccess
 				}
-				return true
-			})
+			}
+			fsm.AddTransitionAfter(tr.From, tr.To, tr.AfterSeconds, condFn)
 		}
 		return wrap(fsm), nil
 
@@ -1099,43 +1092,22 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		scoreKey := p.String("score_key", "")
 		intentKind := p.String("intent", "")
 
-		follow := &FollowPathBehavior{
-			Speed:         speed,
-			MaxForce:      maxForce,
-			ArrivalRadius: math.Max(0.4, capRad*0.5),
-		}
-		var goalID ActorID
-		var goalPos Vec3
-		return Action(func(dt float64, self *Actor, world *World) NodeStatus {
-			target := nearestByTagWithin(self, world, tag, 1e9, false)
-			if target == nil {
-				return StatusFailure
-			}
-			dist := self.Position.Dist(target.Position)
-			self.Blackboard().SetString("status", fmt.Sprintf("A*->%s#%d (%.1fm)", tag, target.ID, dist))
-			if capRad > 0 && dist <= capRad {
-				onCaptureTarget(self, world, target, destroy, scoreKey, intentKind)
-				follow.SetPath(nil)
-				goalID = InvalidActorID
-				return StatusSuccess
-			}
-			if cfg.GridMap != nil {
-				if goalID != target.ID || target.Position.Dist(goalPos) > cfg.GridMap.CellSize() || follow.Completed() || len(follow.Path) == 0 {
-					path, ok := cfg.GridMap.FindWorldPath(self.Position, target.Position, smooth)
-					if !ok || len(path) == 0 {
-						path = []Vec3{target.Position}
-					}
-					follow.SetPath(path)
-					goalID = target.ID
-					goalPos = target.Position
-				}
-				follow.Tick(dt, self, world)
-				return StatusRunning
-			}
-			desired := SteerArrive(self.Position, target.Position, speed, 2.5)
-			ApplySteering(self, desired, maxForce, speed, dt)
-			return StatusRunning
-		}), nil
+		return &followPathTagNode{
+			tag:        tag,
+			speed:      speed,
+			maxForce:   maxForce,
+			smooth:     smooth,
+			capRad:     capRad,
+			destroy:    destroy,
+			scoreKey:   scoreKey,
+			intentKind: intentKind,
+			gridMap:    cfg.GridMap,
+			follow: &FollowPathBehavior{
+				Speed:         speed,
+				MaxForce:      maxForce,
+				ArrivalRadius: math.Max(0.4, capRad*0.5),
+			},
+		}, nil
 	})
 
 	r.RegisterAction(PrimitiveDef{
@@ -1187,21 +1159,18 @@ func NewStandardRegistry(cfg StandardRegistryConfig) *BehaviorRegistry {
 		hh := p.Float("half_height", 5.0)
 		speed := p.Float("speed", 7.5)
 		arr := p.Float("arrival_radius", 1.0)
-		patrol := &PatrolBehavior{
-			Waypoints: []Vec3{
-				Vec2(-hw, -hh),
-				Vec2(hw, -hh),
-				Vec2(hw, hh),
-				Vec2(-hw, hh),
+		return &patrolBoxNode{
+			patrol: &PatrolBehavior{
+				Waypoints: []Vec3{
+					Vec2(-hw, -hh),
+					Vec2(hw, -hh),
+					Vec2(hw, hh),
+					Vec2(-hw, hh),
+				},
+				Speed:         speed,
+				ArrivalRadius: arr,
 			},
-			Speed:         speed,
-			ArrivalRadius: arr,
-		}
-		return Action(func(dt float64, self *Actor, world *World) NodeStatus {
-			patrol.Tick(dt, self, world)
-			self.Blackboard().SetString("status", fmt.Sprintf("patrol wp#%d", patrol.CurrentIndex+1))
-			return StatusRunning
-		}), nil
+		}, nil
 	})
 
 	r.RegisterAction(PrimitiveDef{
@@ -1530,7 +1499,11 @@ type IntentSummary struct {
 // RolloutConfig configures a headless counterfactual rollout evaluation of a
 // candidate BehaviorSpec.
 type RolloutConfig struct {
-	// BuildWorld constructs a fresh World for the given seed.
+	// BaseWorld, when non-nil, is cloned via BaseWorld.Clone() as the starting
+	// state for the rollout (enabling mid-simulation counterfactual branching
+	// from any live tick). When nil, BuildWorld(Seed) is used instead.
+	BaseWorld *World
+	// BuildWorld constructs a fresh World for the given seed when BaseWorld is nil.
 	BuildWorld func(seed uint64) *World
 	// Registry compiles Spec for each matching Actor.
 	Registry *BehaviorRegistry
@@ -1564,10 +1537,11 @@ type RolloutResult struct {
 }
 
 // EvaluateRollout compiles cfg.Spec, installs it on the target Actor(s) in a
-// fresh headless World, steps cfg.Ticks frames, and returns a RolloutResult.
+// cloned or freshly constructed headless World, steps cfg.Ticks frames, and
+// returns a RolloutResult.
 func EvaluateRollout(cfg RolloutConfig) (RolloutResult, error) {
-	if cfg.BuildWorld == nil {
-		return RolloutResult{}, fmt.Errorf("%w: RolloutConfig.BuildWorld is nil", ErrInvalidSpec)
+	if cfg.BaseWorld == nil && cfg.BuildWorld == nil {
+		return RolloutResult{}, fmt.Errorf("%w: RolloutConfig requires BaseWorld or BuildWorld", ErrInvalidSpec)
 	}
 	if cfg.Registry == nil {
 		return RolloutResult{}, fmt.Errorf("%w: RolloutConfig.Registry is nil", ErrInvalidSpec)
@@ -1588,7 +1562,12 @@ func EvaluateRollout(cfg RolloutConfig) (RolloutResult, error) {
 		dt = 0.05
 	}
 
-	w := cfg.BuildWorld(seed)
+	var w *World
+	if cfg.BaseWorld != nil {
+		w = cfg.BaseWorld.Clone()
+	} else {
+		w = cfg.BuildWorld(seed)
+	}
 	for _, a := range w.Actors() {
 		match := (cfg.TargetActor != InvalidActorID && a.ID == cfg.TargetActor) ||
 			(cfg.TargetTag != "" && a.Tag == cfg.TargetTag)

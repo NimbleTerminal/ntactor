@@ -182,3 +182,70 @@ func (r *RNG) Fork(salt uint64) *RNG {
 	derivedSeed := z ^ (z >> 31)
 	return NewRNG(derivedSeed)
 }
+
+// RNGCheckpoint captures the deterministic internal state of an RNG so it can
+// be restored in O(1) or cloned across simulation branches.
+type RNGCheckpoint struct {
+	Seed       uint64    `json:"seed"`
+	Calls      uint64    `json:"calls"`
+	State      [4]uint64 `json:"state"`
+	HasXoshiro bool      `json:"has_xoshiro,omitempty"`
+}
+
+// Checkpoint returns a deterministic snapshot of r's seed, call count, and
+// internal PRNG state.
+func (r *RNG) Checkpoint() RNGCheckpoint {
+	if r == nil {
+		return RNGCheckpoint{}
+	}
+	cp := RNGCheckpoint{
+		Seed:  r.seed,
+		Calls: r.calls,
+	}
+	if x, ok := r.src.(*xoshiro256ss); ok && x != nil {
+		cp.State = x.s
+		cp.HasXoshiro = true
+	}
+	return cp
+}
+
+// Restore resets r to the exact state captured in cp.
+func (r *RNG) Restore(cp RNGCheckpoint) {
+	if r == nil {
+		return
+	}
+	r.seed = cp.Seed
+	r.calls = cp.Calls
+	if x, ok := r.src.(*xoshiro256ss); ok && x != nil && cp.HasXoshiro {
+		x.s = cp.State
+		return
+	}
+	if r.src == nil {
+		x := &xoshiro256ss{}
+		if cp.HasXoshiro {
+			x.s = cp.State
+		} else {
+			x.Seed(cp.Seed)
+			for i := uint64(0); i < cp.Calls; i++ {
+				x.Uint64()
+			}
+		}
+		r.src = x
+		return
+	}
+	r.src.Seed(cp.Seed)
+	for i := uint64(0); i < cp.Calls; i++ {
+		r.src.Uint64()
+	}
+}
+
+// Clone returns an independent copy of r at its current stream position.
+func (r *RNG) Clone() *RNG {
+	if r == nil {
+		return NewRNG(0)
+	}
+	cp := r.Checkpoint()
+	out := NewRNG(cp.Seed)
+	out.Restore(cp)
+	return out
+}
