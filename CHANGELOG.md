@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.0 (2026-10-30)
+
+- **Checkpoints & rollouts**: Added `WorldCheckpoint`, `Restore`, and `Clone` for deterministic rollback and branching, JSON checkpoint encoding, and live `BaseWorld` rollouts.
+- **Sensory memory**: Added Actor-owned `SensoryMemory`, visual perception, confidence decay, and `EmitSound`, with declarative memory primitives and planner demo integration.
+- **Documentation**: Added `GUIDE.md` covering library usage, checkpoints, rollouts, and sensory memory.
+- **Dependencies**: Updated example dependencies, including Bubble Tea v2.1.1, go-booba v0.10.7, nt3d v0.8.0, ntcanvas v0.1.3, ntpicture v0.1.4, and transitive dependencies. The root library remains dependency-free.
+
 ## v0.1.0 (2026-10-25)
 
 Initial release of `ntactor`, a deterministic, renderer-agnostic Go library for game and simulation Actors.
