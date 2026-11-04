@@ -6,6 +6,7 @@ const demos = ['arena', 'flock', 'nav', 'scene3d', 'planner'];
 
 for (const file of [
   'index.html', 'site.css', 'site.js', 'wasm_exec.js', 'booba/booba.js',
+  'ntwebterm/ntwebterm.js', 'ntwebterm/ghostty-vt.wasm',
   'ghostty-web/ghostty-web.js', 'ghostty-web/ghostty-vt.wasm',
   'LICENSE',
 ]) await access(`web/${file}`);

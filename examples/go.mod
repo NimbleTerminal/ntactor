@@ -7,15 +7,15 @@ replace nimbleterminal.dev/ntactor => ..
 require (
 	charm.land/bubbles/v2 v2.2.1
 	charm.land/bubbletea/v2 v2.1.1
-	github.com/NimbleMarkets/go-booba v0.10.7
 	github.com/lrstanley/bubblezone/v2 v2.0.0
+	nimbleterminal.dev/booba v0.12.1
 	nimbleterminal.dev/nt3d v0.8.0
 	nimbleterminal.dev/ntactor v0.0.0
 	nimbleterminal.dev/ntcanvas v0.1.3
-	nimbleterminal.dev/ntpicture v0.1.4
+	nimbleterminal.dev/ntpicture v0.1.5
 )
 
-tool github.com/NimbleMarkets/go-booba/cmd/booba-assets
+tool nimbleterminal.dev/booba/cmd/booba-assets
 
 require (
 	charm.land/lipgloss/v2 v2.0.6 // indirect
@@ -27,12 +27,12 @@ require (
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
-	github.com/go-webgpu/goffi v0.6.7 // indirect
+	github.com/go-webgpu/goffi v0.6.8 // indirect
 	github.com/go-webgpu/webgpu v0.5.5 // indirect
 	github.com/gogpu/gpucontext v0.31.3 // indirect
-	github.com/gogpu/gputypes v0.8.0 // indirect
-	github.com/gogpu/naga v0.20.4 // indirect
-	github.com/gogpu/wgpu v0.34.5 // indirect
+	github.com/gogpu/gputypes v0.8.2 // indirect
+	github.com/gogpu/naga v0.21.2 // indirect
+	github.com/gogpu/wgpu v0.34.7 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.1 // indirect
 	github.com/mattn/go-runewidth v0.0.31 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect

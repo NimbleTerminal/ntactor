@@ -101,7 +101,7 @@ Building requires Go 1.26.8 or newer. See [`examples/README.md`](./examples/READ
 - **`task run-replay`** ([`examples/replay`](./examples/replay/main.go)) — CLI verification demo recording a live simulation into an `EventLog`, round-tripping through JSON/binary codecs, replaying via `HistoricalDriver`, and asserting identical `World.Hash()` digests.
 - **`task tapes`** ([`tapes/`](./tapes)) — records `arena`, `flock`, `nav`, `scene3d`, and `planner` GIFs (`dist/tapes/*.gif`) and README screenshots (`docs/images/*.png`) using [`ntrecord`](https://github.com/NimbleTerminal/ntrecord).
 
-All five interactive examples compile to WebAssembly and run in the browser demo gallery via [`booba`](https://github.com/NimbleMarkets/go-booba), publishing their key bindings as interactive OSC 7501 action buttons above the terminal:
+All five interactive examples compile to WebAssembly and run in the browser demo gallery via [`booba`](https://nimbleterminal.dev/booba), publishing their key bindings as interactive OSC 7501 action buttons above the terminal:
 
 ```sh
 task serve-wasm-site   # builds web/demos/*.wasm, stages booba assets, serves http://localhost:8000/web/

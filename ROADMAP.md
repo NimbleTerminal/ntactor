@@ -62,9 +62,9 @@ is already implemented.
   3D A\* path lines, and a 3D Boids murmuration point cloud from an
   `ntactor.World` in a Bubble Tea viewport with mouse camera orbit, ray-cast
   floor picking, and `HistoricalDriver` replay.
-- [x] **Browser WASM gallery (`web/`, `wasm.work`, `go-booba`)**: compile
+- [x] **Browser WASM gallery (`web/`, `wasm.work`, `booba`)**: compile
   `arena`, `flock`, `nav`, `scene3d`, and `planner` to `js/wasm` with
-  `go-booba` and `ghostty-web`, OSC 7501 action buttons, Node smoke tests
+  `booba` and `ntwebterm`, OSC 7501 action buttons, Node smoke tests
   (`scripts/smoke-demo.mjs`), and GitHub Pages deployment
   (`.github/workflows/pages.yml`).
 - [x] **Path planning & FlowField navigation (`nav.go`, `examples/nav`)**:

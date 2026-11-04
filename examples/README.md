@@ -1,6 +1,6 @@
 # Examples
 
-Run these from the repository root with `task`. Each interactive browser demo publishes its key bindings through [`booba`](https://github.com/NimbleMarkets/go-booba) so the same actions appear as interactive buttons above the terminal.
+Run these from the repository root with `task`. Each interactive browser demo publishes its key bindings through [`booba`](https://nimbleterminal.dev/booba) so the same actions appear as interactive buttons above the terminal.
 
 | Command | What it shows | Controls / Flags |
 | --- | --- | --- |
@@ -13,7 +13,7 @@ Run these from the repository root with `task`. Each interactive browser demo pu
 
 ## Browser / WASM Demo Gallery
 
-`task serve-wasm-site` builds all five interactive demos (`arena`, `flock`, `nav`, `scene3d`, `planner`) to `web/demos/*.wasm`, stages the `booba` and `ghostty-web` runtime assets into `web/`, smoke-tests each binary under Node, and serves the gallery at `http://localhost:8000/web/`:
+`task serve-wasm-site` builds all five interactive demos (`arena`, `flock`, `nav`, `scene3d`, `planner`) to `web/demos/*.wasm`, stages the `booba` and `ntwebterm` runtime assets into `web/`, smoke-tests each binary under Node, and serves the gallery at `http://localhost:8000/web/`:
 
 ```sh
 task serve-wasm-site
@@ -21,4 +21,4 @@ task serve-wasm-site
 
 Switch demos via the top navigation cards or query parameters (`?demo=arena`, `?demo=flock`, `?demo=nav`, `?demo=scene3d`, `?demo=planner`).
 
-The `examples` directory is a separate Go module (`nimbleterminal.dev/ntactor/examples`) so that terminal, 3D, and browser UI dependencies (`Bubble Tea`, `ntcanvas`, `nt3d`, `ntpicture`, `go-booba`) stay completely outside the root `nimbleterminal.dev/ntactor` module.
+The `examples` directory is a separate Go module (`nimbleterminal.dev/ntactor/examples`) so that terminal, 3D, and browser UI dependencies (`Bubble Tea`, `ntcanvas`, `nt3d`, `ntpicture`, `booba`) stay completely outside the root `nimbleterminal.dev/ntactor` module.
