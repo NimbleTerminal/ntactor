@@ -2,7 +2,7 @@
 
 ## v0.3.0 (2026-11-04)
 
-- **Dependencies**: Migrated examples and the asset tool to `nimbleterminal.dev/booba` v0.12.1, updated the WASM Bubble Tea fork, updated ntpicture to v0.1.5, and refreshed goffi, gputypes, naga, and wgpu. The root library remains dependency-free.
+- **Dependencies**: Migrated examples and the asset tool to `nimbleterminal.dev/booba` v0.12.1, updated the WASM Bubble Tea fork, updated ntcanvas to v0.1.4 and ntpicture to v0.1.5, and refreshed goffi, gputypes, naga, and wgpu. The root library remains dependency-free.
 - **Browser gallery**: Updated asset validation, cleanup, and documentation for booba’s `ntwebterm` runtime.
 
 ## v0.2.0 (2026-10-30)

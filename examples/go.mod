@@ -11,7 +11,7 @@ require (
 	nimbleterminal.dev/booba v0.12.1
 	nimbleterminal.dev/nt3d v0.8.0
 	nimbleterminal.dev/ntactor v0.0.0
-	nimbleterminal.dev/ntcanvas v0.1.3
+	nimbleterminal.dev/ntcanvas v0.1.4
 	nimbleterminal.dev/ntpicture v0.1.5
 )
 
